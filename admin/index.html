@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Passport Photo Admin</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-admin-root data-base-path="">
+<main>
+  <section id="login-view" class="card">
+    <h1>Admin sign in</h1>
+    <p class="hint">This private panel is available only at the configured admin path.</p>
+    <form id="login-form">
+      <label>Username <input name="username" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <section id="dashboard-view" hidden>
+    <h1>Passport Photo Admin</h1>
+    <p class="hint">Developer: Aman Somvanshi · Secure control center</p>
+    <button id="refresh">Refresh data</button><button id="logout" class="secondary">Sign out</button>
+    <p id="dashboard-error" class="error" hidden></p>
+    <section class="card">
+      <h2>Website status</h2>
+      <label><input id="maintenance" type="checkbox" style="width:auto"> Show maintenance overlay to visitors</label>
+      <label for="message">Broadcast message</label>
+      <textarea id="message" maxlength="500" placeholder="Optional visitor message"></textarea>
+      <button id="save-state">Save status</button>
+    </section>
+    <section class="card">
+      <h2>Upload records</h2>
+      <p class="hint">File paths and photo contents are intentionally not shown.</p>
+      <div class="table-wrap"><table><thead><tr><th>Created</th><th>Name</th><th>Type</th><th>Original bytes</th><th>Processed bytes</th><th>Status</th></tr></thead><tbody id="uploads-body"></tbody></table></div>
+    </section>
+    <section class="card">
+      <h2>Live request logs</h2>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>What happened</th><th>IP</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+    </section>
+  </section>
+</main>
+<script>
+  document.body.dataset.basePath = window.location.pathname.replace(/\/$/, '');
+</script>
+<script src="./app.js"></script>
+</body>
+</html>

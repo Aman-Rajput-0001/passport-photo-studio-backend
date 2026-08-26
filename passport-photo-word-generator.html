@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Passport Photo → Word File</title>
+<meta name="description" content="Create studio-style 35×45 mm passport photos and download a print-ready Word file.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#1c1b1a; --panel:#242220; --panel-2:#2c2a27; --line:#3a3733;
+    --ink:#efece6; --muted:#9b968c; --accent:#d9a628; --accent-ink:#1c1b1a; --accent-2:#4f8c82;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:radial-gradient(circle at 50% -10%,#34302a 0,var(--bg) 38%);color:var(--ink);font-family:'Inter',sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:760px;margin:0 auto;padding:28px 24px 60px;}
+  .brandbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:48px;}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-family:'Space Grotesk',sans-serif;font-weight:600;letter-spacing:.02em;}
+  .brand-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:var(--accent);color:var(--accent-ink);font-size:15px;}
+  .brand-note{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);}
+  .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 10px;}
+  h1{font-family:'Space Grotesk',sans-serif;font-size:34px;line-height:1.1;margin:0 0 12px;font-weight:600;letter-spacing:-.01em;}
+  .lead{color:var(--muted);font-size:15px;max-width:520px;line-height:1.55;margin:0 0 8px;}
+  .fixed-size{
+    display:inline-flex;gap:8px;align-items:center;margin-top:14px;
+    font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--accent);
+    border:1px solid var(--line);padding:7px 12px;border-radius:20px;
+  }
+  .trust-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:24px 0 12px;}
+  .trust-card{padding:12px 13px;background:rgba(36,34,32,.72);border:1px solid var(--line);border-radius:9px;}
+  .trust-card strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:13px;margin-bottom:4px;}
+  .trust-card span{display:block;color:var(--muted);font-size:11px;line-height:1.4;}
+  .step{display:flex;gap:22px;padding:28px 0;border-top:1px solid var(--line);}
+  .step-num{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--accent);color:var(--accent);
+    font-family:'IBM Plex Mono',monospace;font-size:13px;display:flex;align-items:center;justify-content:center;margin-top:2px;}
+  .step-num.done{background:var(--accent);color:var(--accent-ink);}
+  .step-body{flex:1;min-width:0;}
+  .step-title{font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:600;margin:2px 0 6px;}
+  .step-sub{color:var(--muted);font-size:13.5px;margin:0 0 18px;line-height:1.5;}
+
+  .dropzone{border:1.5px dashed var(--line);border-radius:10px;padding:38px 20px;text-align:center;cursor:pointer;
+    transition:border-color .15s, background .15s;background:var(--panel);}
+  .dropzone:hover,.dropzone.drag{border-color:var(--accent);background:var(--panel-2);}
+  .dropzone svg{opacity:.55;margin-bottom:10px;}
+  .dropzone .dz-title{font-size:14.5px;font-weight:500;}
+  .dropzone .dz-sub{font-size:12.5px;color:var(--muted);margin-top:4px;font-family:'IBM Plex Mono',monospace;}
+  input[type=file]{display:none;}
+
+  .processing{display:flex;gap:8px;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--muted);margin-top:14px;}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite ease-in-out;}
+  .dot:nth-child(2){animation-delay:.15s;} .dot:nth-child(3){animation-delay:.3s;}
+  @keyframes pulse{0%,100%{opacity:.25;}50%{opacity:1;}}
+
+  .result-row{display:flex;gap:18px;align-items:flex-start;margin-top:16px;}
+  .result-row img{width:110px;height:141px;object-fit:cover;border-radius:5px;border:1px solid var(--line);}
+  .result-meta{font-size:13px;color:var(--muted);line-height:1.7;}
+  .result-meta b{color:var(--ink);}
+  .link-btn{background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;text-decoration:underline;padding:0;font-family:'Inter',sans-serif;}
+
+  .field{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;width:140px;}
+  .field label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-family:'IBM Plex Mono',monospace;}
+  .field input{background:none;border:none;color:var(--ink);font-size:16px;width:100%;font-family:'IBM Plex Mono',monospace;outline:none;}
+
+  button.primary{background:var(--accent);color:var(--accent-ink);border:none;border-radius:7px;padding:13px 24px;
+    font-size:14.5px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;}
+  button.primary:hover{filter:brightness(1.08);}
+  button.primary:disabled{opacity:.4;cursor:not-allowed;}
+
+  .sheet-summary{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--muted);margin:18px 0;
+    padding:12px 16px;background:var(--panel);border-radius:8px;border:1px solid var(--line);}
+  .sheet-summary b{color:var(--ink);}
+  .hidden{display:none !important;}
+  .tip{font-size:12.5px;color:var(--muted);margin-top:16px;line-height:1.6;border-left:2px solid var(--accent);padding-left:12px;}
+
+  .bg-options{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px;}
+  .toggle-row-bg{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:500;}
+  .toggle-row-bg input{accent-color:var(--accent);width:16px;height:16px;}
+  .chip-row{display:flex;gap:8px;margin:12px 0 4px;padding-left:26px;}
+  .bgchip{font-family:'IBM Plex Mono',monospace;font-size:12px;padding:6px 12px;border-radius:16px;
+    border:1px solid var(--line);cursor:pointer;color:var(--muted);}
+  .bgchip.active{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);}
+  .bg-custom{display:flex;align-items:center;gap:8px;margin:12px 0 0;padding-left:26px;font-size:12px;color:var(--muted);}
+  .bg-custom input[type=color]{width:32px;height:26px;padding:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer;}
+  .bg-note{font-size:11.5px;color:var(--muted);margin:8px 0 0;padding-left:26px;line-height:1.5;}
+  .bg-warning{font-size:12.5px;color:var(--danger,#c1503a);margin-top:10px;line-height:1.5;}
+  .ai-option{display:flex;align-items:flex-start;gap:10px;margin:14px 0;padding:13px 14px;background:rgba(79,140,130,.12);border:1px solid rgba(79,140,130,.45);border-radius:9px;cursor:pointer;}
+  .ai-option input{accent-color:var(--accent-2);width:16px;height:16px;margin-top:2px;}
+  .ai-option strong{display:block;font-size:13px;color:var(--ink);}
+  .ai-option small{display:block;color:var(--muted);font-size:11.5px;line-height:1.45;margin-top:3px;}
+  .advanced-edit{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-top:16px;}
+  .advanced-edit summary{cursor:pointer;color:var(--accent);font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.05em;}
+  .slider-row{display:grid;grid-template-columns:110px 1fr 38px;gap:10px;align-items:center;margin-top:13px;font-size:12px;color:var(--muted);}
+  .slider-row input[type=range]{width:100%;accent-color:var(--accent);}
+  .slider-value{text-align:right;color:var(--ink);font-family:'IBM Plex Mono',monospace;}
+  .reset-edit{margin-top:14px;background:none;border:1px solid var(--line);border-radius:6px;color:var(--muted);padding:7px 10px;cursor:pointer;}
+  .developer{color:var(--muted);font-size:11px;margin-top:28px;font-family:'IBM Plex Mono',monospace;}
+  .footer{border-top:1px solid var(--line);margin-top:20px;padding-top:20px;display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:11px;font-family:'IBM Plex Mono',monospace;}
+  .footer strong{color:var(--ink);font-weight:500;}
+  .maintenance-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:24px;background:rgba(18,17,16,.96);text-align:center;}
+  .maintenance-card{max-width:520px;padding:30px;border:1px solid var(--accent);border-radius:12px;background:var(--panel);}
+  .maintenance-card h2{font-family:'Space Grotesk',sans-serif;margin:0 0 10px;font-size:25px;}
+  .maintenance-card p{color:var(--muted);line-height:1.6;margin:0;white-space:pre-wrap;}
+  .developer-toast{position:fixed;right:22px;bottom:22px;z-index:900;max-width:340px;padding:15px 18px;background:var(--panel);border:1px solid var(--accent);border-radius:10px;box-shadow:0 12px 35px rgba(0,0,0,.35);animation:toastIn .25s ease-out;}
+  .developer-toast strong{display:block;margin-bottom:5px;font-family:'Space Grotesk',sans-serif;}
+  .developer-toast p{margin:0;color:var(--muted);font-size:13px;line-height:1.5;white-space:pre-wrap;}
+  @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  @media (max-width:560px){
+    .wrap{padding:22px 16px 42px;}
+    .brandbar{margin-bottom:34px;}
+    .brand-note{display:none;}
+    h1{font-size:29px;}
+    .step{gap:14px;padding:24px 0;}
+    .trust-row{grid-template-columns:1fr;}
+    .chip-row{padding-left:0;flex-wrap:wrap;}
+    .bg-custom,.bg-note{padding-left:0;}
+    .ai-option{margin-top:12px;}
+    .footer{display:block;line-height:1.8;}
+  }
+</style>
+</head>
+<body>
+<div id="maintenanceOverlay" class="maintenance-overlay hidden" role="alert" aria-live="polite">
+  <div class="maintenance-card">
+    <h2 id="maintenanceTitle">Website temporarily unavailable</h2>
+    <p id="maintenanceMessage">We are carrying out maintenance. Please check back soon.</p>
+  </div>
+</div>
+<div id="developerToast" class="developer-toast hidden" role="status" aria-live="polite">
+  <strong>Message from Aman Somvanshi</strong>
+  <p id="developerToastMessage"></p>
+</div>
+<div class="wrap">
+  <div class="brandbar">
+    <div class="brand"><span class="brand-mark">A</span><span>Passport Photo Studio</span></div>
+    <div class="brand-note">FAST · PRIVATE · PRINT READY</div>
+  </div>
+  <header>
+    <p class="eyebrow">Passport Photo → Word File</p>
+    <h1>Upload a photo, say how many you need — get a print-ready .docx.</h1>
+    <p class="lead">The photo is auto-cropped and auto-enhanced first. Open advanced edit after processing if you want manual studio-style adjustments.</p>
+    <div class="fixed-size">📐 Fixed size: 35 × 45 mm — Indian passport / govt ID standard</div>
+    <div class="trust-row">
+      <div class="trust-card"><strong>Studio finish</strong><span>Auto light, color and sharpness correction.</span></div>
+      <div class="trust-card"><strong>Browser editing</strong><span>Manual adjustments run locally after processing.</span></div>
+      <div class="trust-card"><strong>Ready to print</strong><span>A4 Word sheet with exact-size photos.</span></div>
+    </div>
+  </header>
+
+  <div class="step">
+    <div class="step-num" id="num1">1</div>
+    <div class="step-body">
+      <p class="step-title">Upload your photo</p>
+      <p class="step-sub">A clear, front-facing photo works best — even a raw phone/camera shot is fine. Editing happens automatically.</p>
+
+      <div class="bg-options">
+        <div class="toggle-row-bg">
+          <input type="checkbox" id="bgRemoveToggle" checked>
+          <label for="bgRemoveToggle">Studio background — auto-remove &amp; replace</label>
+        </div>
+        <div class="chip-row" id="bgColorChips">
+          <div class="bgchip active" data-color="#ffffff">White (passport)</div>
+          <div class="bgchip" data-color="#a9cdea">Light blue (other ID)</div>
+         <div class="bgchip" data-color="#f3f3f3">Off-white</div>
+         <div class="bgchip" data-color="#e8eef5">Very light blue</div>
+        </div>
+        <label class="bg-custom" for="customBgColor">Custom background color <input id="customBgColor" type="color" value="#ffffff"></label>
+        <p class="bg-note">Automatically removes the background with the secure backend, then applies your selected color. Custom colors are sent to remove.bg.</p>
+      </div>
+      <label class="ai-option" for="aiEnhanceToggle">
+        <input type="checkbox" id="aiEnhanceToggle">
+        <span><strong>✨ Use AI enhancement</strong><small>Optional: improve light, denoise and natural sharpness before passport processing.</small></span>
+      </label>
+
+      <div id="dropzone" class="dropzone">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#efece6" stroke-width="1.4"><path d="M12 16V4M12 4l-4 4M12 4l4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+        <div class="dz-title">Click to upload, or drag a photo here</div>
+        <div class="dz-sub">JPG · PNG</div>
+        <input type="file" id="fileInput" accept="image/*">
+      </div>
+
+      <div id="processingRow" class="processing hidden">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span id="processingText">Auto-cropping and enhancing…</span>
+      </div>
+      <div id="bgWarning" class="bg-warning hidden"></div>
+
+      <div id="resultRow" class="result-row hidden">
+        <img id="resultImg" alt="processed passport photo">
+        <div class="result-meta">
+          <div><b>Ready</b> · 35×45mm · 300 DPI</div>
+          <div>Automatic studio enhancement applied</div>
+          <button class="link-btn" id="aiEnhance" style="margin-top:6px;">✨ Enhance with AI</button>
+          <button class="link-btn" id="changePhoto" style="margin-top:6px;">Upload a different photo</button>
+        </div>
+      </div>
+      <details id="advancedEdit" class="advanced-edit hidden">
+        <summary>Advanced manual editing</summary>
+        <div class="slider-row"><label for="brightnessControl">Brightness</label><input id="brightnessControl" type="range" min="-30" max="30" value="0"><span id="brightnessValue" class="slider-value">0</span></div>
+        <div class="slider-row"><label for="contrastControl">Contrast</label><input id="contrastControl" type="range" min="-20" max="20" value="0"><span id="contrastValue" class="slider-value">0</span></div>
+        <div class="slider-row"><label for="saturationControl">Color</label><input id="saturationControl" type="range" min="-20" max="20" value="0"><span id="saturationValue" class="slider-value">0</span></div>
+        <div class="slider-row"><label for="sharpnessControl">Sharpness</label><input id="sharpnessControl" type="range" min="0" max="40" value="16"><span id="sharpnessValue" class="slider-value">16</span></div>
+        <button type="button" class="reset-edit" id="studioClarity">Apply studio clarity</button>
+        <button type="button" class="reset-edit" id="resetEdit">Reset manual edits</button>
+        <p class="bg-note">Runs locally in your browser: balances light, contrast, color and sharpness without sending the photo to another AI service.</p>
+      </details>
+    </div>
+    <div class="developer">Developed by Aman Somvanshi</div>
+  </div>
+
+  <div class="step">
+    <div class="step-num" id="num2">2</div>
+    <div class="step-body">
+      <p class="step-title">How many copies?</p>
+      <p class="step-sub">They'll be arranged automatically on A4 page(s), ready to cut.</p>
+      <div class="field">
+        <label>Quantity</label>
+        <input type="number" id="quantity" value="8" min="1" max="80" step="1">
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-num" id="num3">3</div>
+    <div class="step-body">
+      <p class="step-title">Download</p>
+      <p class="step-sub">Generates a real .docx file — opens directly in Word.</p>
+      <button class="primary" id="generateBtn" disabled>Generate &amp; download Word file</button>
+      <div id="sheetSummary" class="sheet-summary hidden"></div>
+      <p class="tip">Print at 100% scale (no "fit to page") for exact 35×45mm size. Cut along each photo's edge.</p>
+    </div>
+  </div>
+  <footer class="footer">
+    <span>Made for quick ID-photo printing</span>
+    <span>Developed by <strong>Aman Somvanshi</strong></span>
+  </footer>
+</div>
+
+<script type="module">
+(async function(){
+  const MM_TO_EMU = 36000;
+  const MM_TO_TWIP = 56.69291338582677;
+  const PHOTO_W_MM = 35, PHOTO_H_MM = 45;
+  const DPI = 300;
+  const PX_W = Math.round(PHOTO_W_MM * DPI / 25.4);
+  const PX_H = Math.round(PHOTO_H_MM * DPI / 25.4);
+
+  const el = id => document.getElementById(id);
+  const state = { img: null, originalFile: null, processedCanvas: null, blob: null, bgColor: '#ffffff' };
+  const editControls = ['brightness', 'contrast', 'saturation', 'sharpness'];
+
+  // ---------- Backend config ----------
+  // Local development: your Node/Express backend runs on port 8787.
+  // For production, replace this with your deployed HTTPS backend URL.
+  const BACKEND_URL = 'http://localhost:8787';
+  const REMOVE_BG_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/remove-bg`;
+  const AI_ENHANCE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/ai-enhance`;
+  const STATUS_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/status`;
+  let toastTimer = null;
+  console.log('[Passport Photo] Background API configured:', REMOVE_BG_ENDPOINT);
+
+  async function checkWebsiteStatus(){
+    try{
+      const response = await fetch(STATUS_ENDPOINT, { cache: 'no-store' });
+      if(!response.ok) return;
+      const status = await response.json();
+      const overlay = el('maintenanceOverlay');
+      const title = el('maintenanceTitle');
+      const text = el('maintenanceMessage');
+      if(status.maintenance === true){
+        title.textContent = 'Website under maintenance';
+        text.textContent = status.message || 'This site is temporarily down on the order of the developer. Please check back soon.';
+        overlay.classList.remove('hidden');
+      }else{
+        overlay.classList.add('hidden');
+      }
+      const message = typeof status.message === 'string' ? status.message.trim() : '';
+      const messageKey = status.updatedAt || message;
+      const seenKey = sessionStorage.getItem('developerMessageSeen');
+      if(message && (!seenKey || seenKey !== messageKey) && status.maintenance !== true){
+        const toast = el('developerToast');
+        el('developerToastMessage').textContent = message;
+        toast.classList.remove('hidden');
+        sessionStorage.setItem('developerMessageSeen', messageKey);
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(()=>toast.classList.add('hidden'), 8000);
+      }else if(!message){
+        el('developerToast').classList.add('hidden');
+      }
+    }catch(err){
+      console.warn('[Passport Photo] Status check unavailable:', err);
+    }
+  }
+  checkWebsiteStatus();
+  setInterval(checkWebsiteStatus, 30000);
+
+  function markDone(n){ el('num'+n).classList.add('done'); el('num'+n).textContent = '✓'; }
+
+  // ---------- Background removal (lazy-loaded, on-device, free) ----------
+  let removeBackgroundFn = null;
+  let bgLibFailed = null;
+  async function getRemoveBackground(){
+    if(removeBackgroundFn) return removeBackgroundFn;
+    if(bgLibFailed) return null;
+    try{
+      const mod = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs');
+      removeBackgroundFn = mod.default; // package exports the function as default, not named
+      return removeBackgroundFn;
+    }catch(err){
+      console.error('background-removal library failed to load', err);
+      bgLibFailed = err;
+      return null;
+    }
+  }
+
+  document.querySelectorAll('.bgchip').forEach(chip=>{
+    chip.addEventListener('click', ()=>{
+      document.querySelectorAll('.bgchip').forEach(c=>c.classList.remove('active'));
+      chip.classList.add('active');
+      state.bgColor = chip.dataset.color;
+      el('customBgColor').value = state.bgColor;
+    });
+  });
+  el('customBgColor').addEventListener('input', event=>{
+    document.querySelectorAll('.bgchip').forEach(c=>c.classList.remove('active'));
+    state.bgColor = event.target.value;
+  });
+
+  // ---------- Upload ----------
+  const dropzone = el('dropzone');
+  const fileInput = el('fileInput');
+  dropzone.addEventListener('click', ()=>fileInput.click());
+  ['dragover','dragenter'].forEach(ev=>dropzone.addEventListener(ev,e=>{e.preventDefault();dropzone.classList.add('drag');}));
+  ['dragleave','drop'].forEach(ev=>dropzone.addEventListener(ev,e=>{e.preventDefault();dropzone.classList.remove('drag');}));
+  dropzone.addEventListener('drop', e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+  fileInput.addEventListener('change', e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
+  el('changePhoto').addEventListener('click', ()=>fileInput.click());
+  async function enhanceWithGemini(file){
+    el('processingRow').classList.remove('hidden');
+    el('processingText').textContent = 'Enhancing photo with AI…';
+    try{
+      const formData = new FormData();
+      formData.append('image', file);
+      const response = await fetch(AI_ENHANCE_ENDPOINT, { method: 'POST', body: formData });
+      if(!response.ok){
+        const error = await response.json().catch(()=>({}));
+        throw new Error(error.error || `AI enhancement failed: ${response.status}`);
+      }
+      const enhancedBlob = await response.blob();
+      return new File([enhancedBlob], file.name, { type: enhancedBlob.type || 'image/png' });
+    }catch(error){
+      console.error('[Passport Photo] AI enhancement failed:', error);
+      el('bgWarning').textContent = `${error.message} Local Studio Clarity will still be used.`;
+      el('bgWarning').classList.remove('hidden');
+      return file;
+    }
+  }
+  el('aiEnhance').addEventListener('click', async ()=>{
+    if(!state.originalFile) return;
+    const button = el('aiEnhance');
+    button.disabled = true;
+    const enhancedFile = await enhanceWithGemini(state.originalFile);
+    await processUploadedFile(enhancedFile);
+    button.disabled = false;
+  });
+  editControls.forEach(name=>{
+    const control = el(`${name}Control`);
+    control.addEventListener('input', ()=>{
+      el(`${name}Value`).textContent = control.value;
+      if(state.img) processPhoto();
+    });
+  });
+  el('resetEdit').addEventListener('click', ()=>{
+    el('brightnessControl').value = 0;
+    el('contrastControl').value = 0;
+    el('saturationControl').value = 0;
+    el('sharpnessControl').value = 16;
+    editControls.forEach(name=>{ el(`${name}Value`).textContent = el(`${name}Control`).value; });
+    if(state.img) processPhoto();
+  });
+  el('studioClarity').addEventListener('click', ()=>{
+    el('brightnessControl').value = 4;
+    el('contrastControl').value = 8;
+    el('saturationControl').value = 4;
+    el('sharpnessControl').value = 24;
+    editControls.forEach(name=>{ el(`${name}Value`).textContent = el(`${name}Control`).value; });
+    if(state.img) processPhoto();
+  });
+
+  async function handleFile(file){
+    state.originalFile = file;
+    const workingFile = el('aiEnhanceToggle').checked ? await enhanceWithGemini(file) : file;
+    await processUploadedFile(workingFile);
+  }
+
+  async function processUploadedFile(file){
+    el('resultRow').classList.add('hidden');
+    el('bgWarning').classList.add('hidden');
+    el('processingRow').classList.remove('hidden');
+    el('generateBtn').disabled = true;
+    el('sheetSummary').classList.add('hidden');
+
+    let workingFile = file;
+
+    if(el('bgRemoveToggle').checked){
+      el('processingText').textContent = 'Cleaning up background…';
+      try{
+        workingFile = await tryBackgroundCleanup(file, state.bgColor);
+      }catch(err){
+        console.error('background cleanup failed entirely', err);
+        el('bgWarning').textContent = 'Background cleanup skipped — continuing with your original background.';
+        el('bgWarning').classList.add('warn');
+        el('bgWarning').classList.remove('hidden');
+      }
+    }
+
+    el('processingText').textContent = 'Auto-cropping and enhancing…';
+    const reader = new FileReader();
+    reader.onload = e=>{
+      const img = new Image();
+      img.onload = ()=>{
+        state.img = img;
+        setTimeout(()=>{ processPhoto(); }, 30);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(workingFile);
+  }
+
+  // Three-tier background cleanup, best quality first:
+  //   1. Backend proxy → remove.bg — best quality, works on any device,
+  //      no big model download. Requires BACKEND_URL to be set (see /backend folder).
+  //   2. On-device AI model (@imgly/background-removal) — good quality, runs fully in-browser,
+  //      but needs to download a ~40-80MB model on first use and a normal (non-sandboxed) tab.
+  //   3. Local zero-network chroma-key cleanup — always works, but only good for a plain,
+  //      evenly-lit background (wall/sheet). Last-resort fallback only.
+  async function tryBackgroundCleanup(file, colorHex){
+    // Tier 1: backend (remove.bg)
+    if(REMOVE_BG_ENDPOINT){
+      try{
+        el('processingText').textContent = 'Removing background (AI)…';
+        const cutoutBlob = await removeBgViaBackend(file, colorHex);
+        return await compositeOnBackground(cutoutBlob, colorHex);
+      }catch(err){
+        console.error('[Passport Photo] Backend/remove.bg background removal failed:', err);
+      }
+    }
+
+    // Tier 2: on-device model
+    const removeBg = await getRemoveBackground();
+    if(removeBg){
+      try{
+        el('processingText').textContent = 'Removing background (on-device AI)…';
+        const cutoutBlob = await removeBg(file);
+        return await compositeOnBackground(cutoutBlob, colorHex);
+      }catch(err){
+        console.error('On-device AI background removal failed, falling back to local cleanup', err);
+      }
+    }
+
+    // Tier 3: local chroma-key fallback
+    el('bgWarning').textContent = 'Using quick on-device background cleanup (works best with a plain wall or sheet behind you). For best results, connect the AI backend (see setup notes) or open this file outside the sandboxed preview.';
+    el('bgWarning').classList.remove('warn');
+    el('bgWarning').classList.remove('hidden');
+    return localBackgroundCleanup(file, colorHex);
+  }
+
+  // Calls the backend's /api/remove-bg endpoint, which proxies to remove.bg
+  // so the remove.bg API key never touches the browser.
+  // Returns a Blob of a transparent-background PNG cutout.
+  async function removeBgViaBackend(file, colorHex){
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('backgroundColor', colorHex.replace('#', ''));
+    formData.append('quantity', el('quantity').value);
+
+    console.log('[Passport Photo] Sending image to backend:', REMOVE_BG_ENDPOINT, {
+      name: file.name,
+      type: file.type,
+      size: file.size
+    });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(), 30000);
+    let resp;
+    try{
+      resp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData, signal: controller.signal });
+      console.log('[Passport Photo] Backend response:', resp.status, resp.statusText);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if(!resp.ok){
+      const errorText = await resp.text();
+      console.error('[Passport Photo] Backend error response:', resp.status, errorText);
+
+      // Model can be "cold" on Hugging Face's free tier the first time it's called —
+      // the backend returns 503 with a retry-after hint in that case.
+      if(resp.status === 503){
+        let info = {};
+        try { info = JSON.parse(errorText); } catch {}
+        const waitMs = Math.min(20000, (info.estimated_time || 8) * 1000);
+        await new Promise(r=>setTimeout(r, waitMs));
+        const retryResp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData });
+        if(!retryResp.ok){
+          const retryText = await retryResp.text();
+          console.error('[Passport Photo] Backend retry error:', retryResp.status, retryText);
+          throw new Error(`backend remove-bg retry failed: ${retryResp.status}`);
+        }
+        return await retryResp.blob();
+      }
+      throw new Error(`backend remove-bg failed: ${resp.status}: ${errorText}`);
+    }
+    return await resp.blob();
+  }
+
+  // Zero-network fallback: estimate the background color from the photo's edges,
+  // then replace pixels close to that color with the target studio color.
+  function localBackgroundCleanup(file, colorHex){
+    return new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        const bg = estimateBackgroundColor(ctx, canvas.width, canvas.height);
+        chromaKeyReplace(ctx, canvas.width, canvas.height, bg, colorHex);
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('cleanup failed')), 'image/png');
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  function estimateBackgroundColor(ctx, w, h){
+    const margin = Math.max(2, Math.round(Math.min(w,h)*0.03));
+    const rs=[], gs=[], bs=[];
+    const stepX = Math.max(1, Math.round(w/80));
+    const stepY = Math.max(1, Math.round(h/80));
+    for(let x=0; x<w; x+=stepX){
+      let d = ctx.getImageData(x, margin, 1, 1).data; rs.push(d[0]); gs.push(d[1]); bs.push(d[2]);
+      d = ctx.getImageData(x, h-1-margin, 1, 1).data; rs.push(d[0]); gs.push(d[1]); bs.push(d[2]);
+    }
+    for(let y=0; y<h; y+=stepY){
+      let d = ctx.getImageData(margin, y, 1, 1).data; rs.push(d[0]); gs.push(d[1]); bs.push(d[2]);
+      d = ctx.getImageData(w-1-margin, y, 1, 1).data; rs.push(d[0]); gs.push(d[1]); bs.push(d[2]);
+    }
+    function median(arr){ const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; }
+    return [median(rs), median(gs), median(bs)];
+  }
+
+  function hexToRgb(hex){
+    const v = parseInt(hex.replace('#',''),16);
+    return [(v>>16)&255, (v>>8)&255, v&255];
+  }
+
+  function chromaKeyReplace(ctx, w, h, bgColor, targetHex){
+    const imgData = ctx.getImageData(0,0,w,h);
+    const d = imgData.data;
+    const [br,bgc,bb] = bgColor;
+    const [tr,tg,tb] = hexToRgb(targetHex);
+    const lowT = 32, highT = 95;
+    for(let i=0;i<d.length;i+=4){
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const dist = Math.sqrt((r-br)*(r-br)+(g-bgc)*(g-bgc)+(b-bb)*(b-bb));
+      let alpha;
+      if(dist<=lowT) alpha=0; else if(dist>=highT) alpha=1; else alpha=(dist-lowT)/(highT-lowT);
+      d[i]   = Math.round(r*alpha + tr*(1-alpha));
+      d[i+1] = Math.round(g*alpha + tg*(1-alpha));
+      d[i+2] = Math.round(b*alpha + tb*(1-alpha));
+    }
+    ctx.putImageData(imgData,0,0);
+  }
+
+  // Composites a transparent cutout PNG onto a solid-color background, returns a Blob
+  function compositeOnBackground(cutoutBlob, colorHex){
+    return new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = colorHex;
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img,0,0);
+        canvas.toBlob(blob=> blob ? resolve(blob) : reject(new Error('composite failed')), 'image/png');
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(cutoutBlob);
+    });
+  }
+
+  // ---------- Auto crop + auto enhance ----------
+  function processPhoto(){
+    const img = state.img;
+    const canvas = document.createElement('canvas');
+    canvas.width = PX_W; canvas.height = PX_H;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const targetAspect = PX_W / PX_H;
+    const srcAspect = img.width / img.height;
+    let sx, sy, sw, sh;
+    if(srcAspect > targetAspect){
+      // source wider than target -> crop width, keep full height
+      sh = img.height;
+      sw = sh * targetAspect;
+      sy = 0;
+      sx = (img.width - sw) / 2;
+    } else {
+      // source taller than target -> crop height, bias toward top (headroom below chin, not above head)
+      sw = img.width;
+      sh = sw / targetAspect;
+      sx = 0;
+      const excess = img.height - sh;
+      sy = excess * 0.18;
+    }
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, PX_W, PX_H);
+
+    autoEnhance(ctx, PX_W, PX_H);
+
+    state.processedCanvas = canvas;
+    canvas.toBlob(blob=>{
+      state.blob = blob;
+      const url = URL.createObjectURL(blob);
+      el('resultImg').src = url;
+      el('processingRow').classList.add('hidden');
+      el('resultRow').classList.remove('hidden');
+        el('advancedEdit').classList.remove('hidden');
+      dropzone.classList.add('hidden');
+      markDone(1);
+      el('generateBtn').disabled = false;
+    }, 'image/png');
+  }
+
+  function clamp255(v){ return v<0?0:v>255?255:v; }
+
+  function autoEnhance(ctx, w, h){
+    let imgData = ctx.getImageData(0,0,w,h);
+    let d = imgData.data;
+
+    // Use luminance levels so skin tones keep their original color balance.
+    const hist=new Array(256).fill(0);
+    for(let i=0;i<d.length;i+=4){
+      const luminance = Math.round(0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
+      hist[luminance]++;
+    }
+    const total = w*h, clip = total*0.006;
+    function bounds(){
+      let sum=0, lo=0, hi=255;
+      for(let v=0; v<256; v++){ sum+=hist[v]; if(sum>=clip){ lo=v; break; } }
+      sum=0;
+      for(let v=255; v>=0; v--){ sum+=hist[v]; if(sum>=clip){ hi=v; break; } }
+      if(hi<=lo){ lo=0; hi=255; }
+      return [lo,hi];
+    }
+    const [low, high] = bounds();
+
+    const contrast = 1.04;
+    const saturation = 1.06;
+    for(let i=0;i<d.length;i+=4){
+      const originalLuminance = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      const normalized = clamp255((originalLuminance-low)*255/((high-low)||1));
+      const targetLuminance = (normalized-128)*contrast + 128;
+      const lift = targetLuminance - originalLuminance;
+      let r=d[i] + lift, g=d[i+1] + lift, b=d[i+2] + lift;
+      const lum = 0.299*r+0.587*g+0.114*b;
+      r = lum + (r-lum)*saturation;
+      g = lum + (g-lum)*saturation;
+      b = lum + (b-lum)*saturation;
+      d[i]=clamp255(r); d[i+1]=clamp255(g); d[i+2]=clamp255(b);
+    }
+    ctx.putImageData(imgData,0,0);
+    const manualBrightness = Number(el('brightnessControl').value);
+    const manualContrast = Number(el('contrastControl').value);
+    const manualSaturation = Number(el('saturationControl').value);
+    const manualData = ctx.getImageData(0, 0, w, h);
+    for(let i=0; i<manualData.data.length; i+=4){
+      const p = manualData.data;
+      const lum = 0.299*p[i] + 0.587*p[i+1] + 0.114*p[i+2];
+      const factor = 1 + manualContrast / 100;
+      p[i] = clamp255((p[i] - lum) * (1 + manualSaturation / 100) + lum * factor + manualBrightness);
+      p[i+1] = clamp255((p[i+1] - lum) * (1 + manualSaturation / 100) + lum * factor + manualBrightness);
+      p[i+2] = clamp255((p[i+2] - lum) * (1 + manualSaturation / 100) + lum * factor + manualBrightness);
+    }
+    ctx.putImageData(manualData, 0, 0);
+    sharpenCanvas(ctx, w, h, Number(el('sharpnessControl').value) / 100);
+  }
+
+  function sharpenCanvas(ctx,w,h,amount){
+    const src = ctx.getImageData(0,0,w,h);
+    const dst = ctx.createImageData(w,h);
+    const sd = src.data, dd = dst.data;
+    const k = [0,-1,0,-1,5,-1,0,-1,0];
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const idx=(y*w+x)*4;
+        if(x===0||y===0||x===w-1||y===h-1){
+          dd[idx]=sd[idx];dd[idx+1]=sd[idx+1];dd[idx+2]=sd[idx+2];dd[idx+3]=sd[idx+3];
+          continue;
+        }
+        for(let c=0;c<3;c++){
+          let sum=0, ki=0;
+          for(let ky=-1;ky<=1;ky++) for(let kx=-1;kx<=1;kx++){ sum += sd[((y+ky)*w+(x+kx))*4+c]*k[ki]; ki++; }
+          dd[idx+c] = clamp255(sd[idx+c]*(1-amount) + clamp255(sum)*amount);
+        }
+        dd[idx+3]=sd[idx+3];
+      }
+    }
+    ctx.putImageData(dst,0,0);
+  }
+
+  // ---------- DOCX generation ----------
+  function mmEmu(mm){ return Math.round(mm * MM_TO_EMU); }
+  function mmTwip(mm){ return Math.round(mm * MM_TO_TWIP); }
+
+  async function buildDocx(imageArrayBuffer, quantity){
+    const pageWmm = 210, pageHmm = 297;
+    const marginXmm = 10, marginYmm = 10, gapXmm = 3, gapYmm = 5;
+    const availWmm = pageWmm - 2*marginXmm;
+    const availHmm = pageHmm - 2*marginYmm;
+    const cols = Math.max(1, Math.floor((availWmm + gapXmm) / (PHOTO_W_MM + gapXmm)));
+    const rows = Math.max(1, Math.floor((availHmm + gapYmm) / (PHOTO_H_MM + gapYmm)));
+    const perPage = cols * rows;
+
+    let drawingsXml = '';
+    let docPrId = 100;
+
+    for (let i = 0; i < quantity; i++) {
+      const pageIndex = Math.floor(i / perPage);
+      const posOnPage = i % perPage;
+      const col = posOnPage % cols;
+      const row = Math.floor(posOnPage / cols);
+      const xMM = marginXmm + col * (PHOTO_W_MM + gapXmm);
+      const yMM = marginYmm + row * (PHOTO_H_MM + gapYmm);
+      const isFirstOnPage = posOnPage === 0;
+      const pageBreakXml = (isFirstOnPage && pageIndex > 0) ? '<w:p><w:r><w:br w:type="page"/></w:r></w:p>' : '';
+      docPrId++;
+
+      drawingsXml += `<w:p>${pageBreakXml}<w:r><w:rPr><w:noProof/></w:rPr><w:drawing>` +
+        `<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="${251658240 + docPrId}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">` +
+        `<wp:simplePos x="0" y="0"/>` +
+        `<wp:positionH relativeFrom="page"><wp:posOffset>${mmEmu(xMM)}</wp:posOffset></wp:positionH>` +
+        `<wp:positionV relativeFrom="page"><wp:posOffset>${mmEmu(yMM)}</wp:posOffset></wp:positionV>` +
+        `<wp:extent cx="${mmEmu(PHOTO_W_MM)}" cy="${mmEmu(PHOTO_H_MM)}"/>` +
+        `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+        `<wp:wrapNone/>` +
+        `<wp:docPr id="${docPrId}" name="Photo ${docPrId}"/>` +
+        `<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+        `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:nvPicPr><pic:cNvPr id="0" name="Photo ${docPrId}"/><pic:cNvPicPr><a:picLocks noChangeAspect="1"/></pic:cNvPicPr></pic:nvPicPr>` +
+        `<pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+        `<pic:spPr bwMode="auto"><a:xfrm><a:off x="0" y="0"/><a:ext cx="${mmEmu(PHOTO_W_MM)}" cy="${mmEmu(PHOTO_H_MM)}"/></a:xfrm>` +
+        `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
+        `<a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></pic:spPr>` +
+        `</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>`;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(quantity / perPage));
+
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14 wp14">
+<w:body>
+${drawingsXml}
+<w:sectPr>
+<w:pgSz w:w="${mmTwip(pageWmm)}" w:h="${mmTwip(pageHmm)}"/>
+<w:pgMar w:top="${mmTwip(marginYmm)}" w:right="${mmTwip(marginXmm)}" w:bottom="${mmTwip(marginYmm)}" w:left="${mmTwip(marginXmm)}" w:header="0" w:footer="0" w:gutter="0"/>
+</w:sectPr>
+</w:body>
+</w:document>`;
+
+    const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`;
+
+    const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`;
+
+    const docRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+</w:styles>`;
+
+    const coreXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Passport Photo Sheet</dc:title>
+</cp:coreProperties>`;
+
+    const appXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+<Application>Passport Photo Studio</Application>
+<Pages>${totalPages}</Pages>
+</Properties>`;
+
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', contentTypesXml);
+    zip.folder('_rels').file('.rels', rootRelsXml);
+    const wordFolder = zip.folder('word');
+    wordFolder.file('document.xml', documentXml);
+    wordFolder.file('styles.xml', stylesXml);
+    wordFolder.folder('_rels').file('document.xml.rels', docRelsXml);
+    wordFolder.folder('media').file('image1.png', imageArrayBuffer);
+    const docProps = zip.folder('docProps');
+    docProps.file('core.xml', coreXml);
+    docProps.file('app.xml', appXml);
+
+    return { blob: await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), cols, rows, perPage, totalPages };
+  }
+
+  el('quantity').addEventListener('input', ()=>{ markDone(2); });
+
+  el('generateBtn').addEventListener('click', async ()=>{
+    if(!state.blob) return;
+    const quantity = Math.max(1, parseInt(el('quantity').value)||1);
+    el('generateBtn').disabled = true;
+    el('generateBtn').textContent = 'Building document…';
+
+    const arrayBuffer = await state.blob.arrayBuffer();
+    const { blob, cols, rows, perPage, totalPages } = await buildDocx(arrayBuffer, quantity);
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'passport-photos-35x45.docx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    el('sheetSummary').innerHTML = `<b>${quantity}</b> photos at <b>35×45mm</b> → up to <b>${perPage}</b> per A4 page → <b>${totalPages}</b> page(s). File downloaded.`;
+    el('sheetSummary').classList.remove('hidden');
+    markDone(3);
+    el('generateBtn').disabled = false;
+    el('generateBtn').textContent = 'Generate & download Word file';
+  });
+
+})();
+</script>
+</body>
+</html>
