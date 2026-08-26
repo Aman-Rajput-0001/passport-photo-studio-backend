@@ -101,6 +101,8 @@ frontend में कभी न रखें.
   responsibilities, and future module structure.
 - [Learning and debugging guide](./docs/LEARNING_GUIDE.md): concepts,
   commands, status codes, and a repeatable debugging process.
+- [Engineer guide](./docs/ENGINEER_GUIDE.md): deployment map, request flow,
+  configuration, admin panel, database, and feature development workflow.
 
 `passport-photo-word-generator.html` file mein ye line dhundo (upar, script
 ke shuru mein):
