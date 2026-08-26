@@ -403,10 +403,7 @@ app.use((err, req, res, next) => {
 
 if (ADMIN_PATH_SECRET && /^[A-Za-z0-9_-]{8,128}$/.test(ADMIN_PATH_SECRET)) {
   const adminBasePath = `/${ADMIN_PATH_SECRET}`;
-  app.get(adminBasePath, (req, res, next) => {
-    if (req.path === adminBasePath) return res.redirect(302, `${adminBasePath}/`);
-    next();
-  });
+  app.get(adminBasePath, (req, res) => res.redirect(302, `${adminBasePath}/`));
   app.use(adminBasePath, createAdminRouter({
     basePath: adminBasePath,
     listUploads,
