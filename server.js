@@ -24,7 +24,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-image';
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_ENHANCE_MODEL = process.env.HF_ENHANCE_MODEL || 'caidas/swin2SR-classical-sr-x2-64';
-const ADMIN_PATH_SECRET = String(process.env.ADMIN_PATH_SECRET || '').replace(/^\/+|\/+$/g, '');
+const ADMIN_PATH_SECRET = String(process.env.ADMIN_PATH_SECRET || '')
+  .trim()
+  .replace(/^\/+|\/+$/g, '');
 
 // Comma-separated list of origins allowed to call this backend.
 // Use "*" while testing.
