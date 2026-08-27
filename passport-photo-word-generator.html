@@ -28,6 +28,7 @@
     font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--accent);
     border:1px solid var(--line);padding:7px 12px;border-radius:20px;
   }
+  .usage-limit{color:var(--danger,#c1503a);}
   .trust-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:24px 0 12px;}
   .trust-card{padding:12px 13px;background:rgba(36,34,32,.72);border:1px solid var(--line);border-radius:9px;}
   .trust-card strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:13px;margin-bottom:4px;}
@@ -147,6 +148,7 @@
     <h1>Upload a photo, say how many you need — get a print-ready .docx.</h1>
     <p class="lead">The photo is auto-cropped and auto-enhanced first. Open advanced edit after processing if you want manual studio-style adjustments.</p>
     <div class="fixed-size">📐 Photo size: <span id="sizeSummary">35 × 45 mm</span></div>
+    <div id="apiUsage" class="fixed-size">Background removal usage: loading…</div>
     <div class="trust-row">
       <div class="trust-card"><strong>Studio finish</strong><span>Auto light, color and sharpness correction.</span></div>
       <div class="trust-card"><strong>Browser editing</strong><span>Manual adjustments run locally after processing.</span></div>
@@ -306,6 +308,7 @@
   const REMOVE_BG_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/remove-bg`;
   const AI_ENHANCE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/ai-enhance`;
   const STATUS_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/status`;
+  const USAGE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/usage`;
   let toastTimer = null;
   console.log('[Passport Photo] Background API configured:', REMOVE_BG_ENDPOINT);
 
@@ -343,6 +346,20 @@
   }
   checkWebsiteStatus();
   setInterval(checkWebsiteStatus, 30000);
+  async function refreshApiUsage(){
+    try{
+      const response = await fetch(USAGE_ENDPOINT, { cache: 'no-store' });
+      if(!response.ok) throw new Error(`usage request failed: ${response.status}`);
+      const usage = (await response.json()).removeBg;
+      el('apiUsage').textContent = `Background removal usage: ${usage.used}/${usage.limit} this month (${usage.remaining} remaining)`;
+      el('apiUsage').classList.toggle('usage-limit', usage.remaining === 0);
+    }catch(error){
+      el('apiUsage').textContent = 'Background removal usage is currently unavailable';
+      console.warn('[Passport Photo] Usage check unavailable:', error);
+    }
+  }
+  refreshApiUsage();
+  setInterval(refreshApiUsage, 15000);
 
   function markDone(n){ el('num'+n).classList.add('done'); el('num'+n).textContent = '✓'; }
 
@@ -461,6 +478,12 @@
         workingFile = await tryBackgroundCleanup(file, state.bgColor);
       }catch(err){
         console.error('background cleanup failed entirely', err);
+        if(err.code === 'REMOVE_BG_LIMIT'){
+          el('processingRow').classList.add('hidden');
+          el('bgWarning').textContent = err.message;
+          el('bgWarning').classList.remove('warn', 'hidden');
+          return;
+        }
         el('bgWarning').textContent = 'Background cleanup skipped — continuing with your original background.';
         el('bgWarning').classList.add('warn');
         el('bgWarning').classList.remove('hidden');
@@ -496,6 +519,7 @@
         return await compositeOnBackground(cutoutBlob, colorHex);
       }catch(err){
         console.error('[Passport Photo] Backend/remove.bg background removal failed:', err);
+        if(err.code === 'REMOVE_BG_LIMIT') throw err;
       }
     }
 
@@ -548,6 +572,12 @@
     if(!resp.ok){
       const errorText = await resp.text();
       console.error('[Passport Photo] Backend error response:', resp.status, errorText);
+      if(resp.status === 429){
+        refreshApiUsage();
+        const limitError = new Error('Monthly API limit reached. Contact Aman Singh at amansomvanshi36@gmail.com or 9871667497.');
+        limitError.code = 'REMOVE_BG_LIMIT';
+        throw limitError;
+      }
 
       // Model can be "cold" on Hugging Face's free tier the first time it's called —
       // the backend returns 503 with a retry-after hint in that case.
@@ -562,10 +592,12 @@
           console.error('[Passport Photo] Backend retry error:', retryResp.status, retryText);
           throw new Error(`backend remove-bg retry failed: ${retryResp.status}`);
         }
+        refreshApiUsage();
         return await retryResp.blob();
       }
       throw new Error(`backend remove-bg failed: ${resp.status}: ${errorText}`);
     }
+    refreshApiUsage();
     return await resp.blob();
   }
 

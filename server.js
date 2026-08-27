@@ -14,12 +14,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const { uploadsDir, createUpload, completeUpload, failUpload, listUploads } = require('./database');
+const { uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage, reserveApiRequest } = require('./database');
 const { createAdminRouter } = require('./admin/router');
 
 const PORT = process.env.PORT || 8787;
 const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY;
 const REMOVE_BG_ENDPOINT = 'https://api.remove.bg/v1.0/removebg';
+const REMOVE_BG_MONTHLY_LIMIT = Number(process.env.REMOVE_BG_MONTHLY_LIMIT || 50);
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-image';
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
@@ -159,6 +160,10 @@ try {
 app.get('/api/status', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(siteState);
+});
+
+app.get('/api/usage', (req, res) => {
+  res.json({ removeBg: getApiUsage(REMOVE_BG_MONTHLY_LIMIT) });
 });
 
 // Optional generative enhancement. The key stays on the server.
@@ -330,6 +335,15 @@ app.post(
        failUpload(uploadId, 'remove.bg is not configured');
        return res.status(500).json({
          error: 'remove.bg is not configured. Set REMOVE_BG_API_KEY in .env.',
+       });
+     }
+
+     const usage = reserveApiRequest(REMOVE_BG_MONTHLY_LIMIT);
+     if (!usage.allowed) {
+       failUpload(uploadId, 'remove.bg monthly limit reached');
+       return res.status(429).json({
+         error: 'Monthly remove.bg API limit reached',
+         usage: { used: usage.used, limit: usage.limit, remaining: usage.remaining },
        });
      }
 

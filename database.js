@@ -28,10 +28,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_photo_uploads_created_at ON photo_uploads(created_at);
   CREATE INDEX IF NOT EXISTS idx_photo_uploads_firebase_uid ON photo_uploads(firebase_uid);
+  CREATE TABLE IF NOT EXISTS api_usage (
+    service TEXT PRIMARY KEY,
+    usage_month TEXT NOT NULL,
+    request_count INTEGER NOT NULL
+  );
 `);
 const columns = db.prepare('PRAGMA table_info(photo_uploads)').all().map(column => column.name);
 if (!columns.includes('photo_width_mm')) db.exec('ALTER TABLE photo_uploads ADD COLUMN photo_width_mm REAL');
 if (!columns.includes('photo_height_mm')) db.exec('ALTER TABLE photo_uploads ADD COLUMN photo_height_mm REAL');
+const initialUsageMonth = new Date().toISOString().slice(0, 7);
+db.prepare(`
+  INSERT INTO api_usage (service, usage_month, request_count)
+  VALUES ('remove.bg', ?, ?)
+  ON CONFLICT(service) DO NOTHING
+`).run(initialUsageMonth, Number(process.env.REMOVE_BG_INITIAL_USAGE || 4));
 
 function createUpload(record) {
   db.prepare(`
@@ -83,4 +94,21 @@ function listUploads(limit = 100) {
   `).all(limit);
 }
 
-module.exports = { uploadsDir, createUpload, completeUpload, failUpload, listUploads };
+function getApiUsage(limit = 50) {
+  const usageMonth = new Date().toISOString().slice(0, 7);
+  const row = db.prepare('SELECT usage_month, request_count FROM api_usage WHERE service = ?').get('remove.bg');
+  if (!row || row.usage_month !== usageMonth) {
+    db.prepare('UPDATE api_usage SET usage_month = ?, request_count = 0 WHERE service = ?').run(usageMonth, 'remove.bg');
+    return { used: 0, limit, remaining: limit };
+  }
+  return { used: row.request_count, limit, remaining: Math.max(0, limit - row.request_count) };
+}
+
+function reserveApiRequest(limit = 50) {
+  const usage = getApiUsage(limit);
+  if (usage.used >= limit) return { allowed: false, ...usage };
+  db.prepare('UPDATE api_usage SET request_count = request_count + 1 WHERE service = ?').run('remove.bg');
+  return { allowed: true, ...getApiUsage(limit) };
+}
+
+module.exports = { uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage, reserveApiRequest };
