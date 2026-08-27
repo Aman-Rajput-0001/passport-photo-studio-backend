@@ -95,44 +95,6 @@ frontend में कभी न रखें.
 
 ## 5. Frontend ko backend se connect karo
 
-## 6. Wallet, manual UPI payments and Supervisor Mode
-
-Every browser receives an opaque, HttpOnly device cookie. The server stores five
-free uses and the wallet balance in SQLite; client-side counters are never trusted.
-After the free uses, each successful background removal or Word download costs
-₹5. Users pay your UPI ID outside the app and submit a claim with the UTR.
-Claims remain pending until an authenticated administrator verifies them; only
-approval credits the wallet, and duplicate UTRs are rejected.
-
-Set these public payment details in `.env`:
-
-```text
-UPI_ID=your-upi-id@bank
-UPI_QR_IMAGE_URL=https://example.com/upi-qr.png
-PAYMENT_RECEIVER_NAME=Your name
-```
-
-The browser reads these values only from the small public
-`GET /api/payment-config` response. No Firebase account is required: the
-existing opaque HttpOnly device cookie identifies a wallet and payment claim.
-Set `COOKIE_SECURE=true` (and use HTTPS) when the frontend and backend are on
-different sites. Admin claim review actions are session-authenticated and
-CSRF-protected.
-
-Supervisor Mode is intended only for the father/developer and bypasses wallet
-charges and app quotas for the current device session. Generate a scrypt hash
-without putting the code in source control:
-
-```bash
-node admin/generate-supervisor-hash.js "your-long-private-code"
-```
-
-Copy the output to `SUPERVISOR_CODE_HASH` for the first deployment. The
-authenticated admin panel can subsequently set, replace, or disable the code;
-the current value is stored as a scrypt hash in SQLite and takes effect without
-a restart. Failed attempts are rate limited and temporarily locked. Never
-expose the code or hash to the frontend.
-
 ## Project samajhne aur debug karne ke guides
 
 - [Architecture guide](./docs/ARCHITECTURE.md): request flow, file
@@ -153,7 +115,7 @@ Ismein apne backend ka URL daal do:
 - Local testing ke liye: `'http://localhost:8787'`
 - Production ke liye: jahan deploy karoge wahan ka URL (deployment section dekho)
 
-## 7. Free deployment (production ke liye)
+## 6. Free deployment (production ke liye)
 
 Ye backend kisi bhi free Node hosting par chal jaayega. Sabse aasaan:
 
@@ -169,5 +131,6 @@ Railway.app aur Fly.io bhi isi tarah free tier par kaam karte hain.
 ## Notes
 
 - remove.bg API usage account ke credits/rate limits par depend karti hai.
-- Manual payment claims require administrator verification before credits are
-  added to a wallet.
+- Ye backend sirf background-removal ke liye hai. Payment (Razorpay)
+  integration alag se baad mein add karenge — usmein order-create aur
+  signature-verify wale endpoints isi backend mein add ho jaayenge.

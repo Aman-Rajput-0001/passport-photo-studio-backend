@@ -32,40 +32,6 @@
       <button id="save-state">Save status</button>
     </section>
     <section class="card">
-      <h2>Father supervisor access</h2>
-      <p class="hint">Set a new code to enable supervisor mode. The code is hashed on the server and is never displayed here.</p>
-      <form id="supervisor-form">
-        <label for="supervisor-code">New supervisor code</label>
-        <input id="supervisor-code" type="password" autocomplete="new-password" minlength="8" maxlength="256" required>
-        <label for="supervisor-confirmation">Confirm supervisor code</label>
-        <input id="supervisor-confirmation" type="password" autocomplete="new-password" minlength="8" maxlength="256" required>
-        <button type="submit">Save supervisor code</button>
-        <button id="reset-supervisor" type="button" class="secondary">Reset / disable code</button>
-      </form>
-      <p id="supervisor-message" class="hint" role="status"></p>
-    </section>
-    <section class="card">
-      <h2>Monetization summary</h2>
-      <div class="stats-grid">
-        <div class="stat"><span>Manual claims</span><strong id="payments-total">—</strong><small id="payments-total-amount"></small></div>
-        <div class="stat"><span>Pending claims</span><strong id="payments-pending">—</strong><small id="payments-pending-amount"></small></div>
-        <div class="stat"><span>Approved claims</span><strong id="payments-approved">—</strong><small id="payments-approved-amount"></small></div>
-        <div class="stat"><span>Rejected claims</span><strong id="payments-rejected">—</strong><small id="payments-rejected-amount"></small></div>
-        <div class="stat"><span>remove.bg usage</span><strong id="remove-bg-usage">—</strong><small id="remove-bg-remaining"></small></div>
-        <div class="stat"><span>Paid usage</span><strong id="paid-usage">—</strong></div>
-        <div class="stat"><span>Free usage</span><strong id="free-usage">—</strong></div>
-        <div class="stat"><span>Active supervisor sessions</span><strong id="supervisor-sessions">—</strong></div>
-      </div>
-    </section>
-    <section class="card">
-      <h2>Manual payment claims</h2>
-      <div class="table-wrap"><table><thead><tr><th>Created</th><th>Device</th><th>UTR</th><th>Payer</th><th>Amount</th><th>Status</th><th>Review</th></tr></thead><tbody id="payments-body"></tbody></table></div>
-    </section>
-    <section class="card">
-      <h2>Recent usage</h2>
-      <div class="table-wrap"><table><thead><tr><th>Created</th><th>Operation</th><th>Amount</th><th>Free</th><th>Status</th><th>Completed</th></tr></thead><tbody id="usage-body"></tbody></table></div>
-    </section>
-    <section class="card">
       <h2>Upload records</h2>
       <p class="hint">File paths and photo contents are intentionally not shown.</p>
       <div class="table-wrap"><table><thead><tr><th>Created</th><th>Name</th><th>Type</th><th>Original bytes</th><th>Processed bytes</th><th>Status</th></tr></thead><tbody id="uploads-body"></tbody></table></div>

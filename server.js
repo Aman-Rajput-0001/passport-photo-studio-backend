@@ -14,13 +14,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const {
-  uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage,
-  reserveApiRequest, completeApiRequest, releaseApiRequest, walletSummary,
-  reserveUsage, completeUsage, voidUsage, createManualPayment, listManualPayments,
-  approveManualPayment, rejectManualPayment,
-  getSupervisorCodeHash, getAdminSummary, setSupervisorCode,
-} = require('./database');
+const { uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage, reserveApiRequest } = require('./database');
 const { createAdminRouter } = require('./admin/router');
 
 const PORT = process.env.PORT || 8787;
@@ -31,29 +25,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-image';
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_ENHANCE_MODEL = process.env.HF_ENHANCE_MODEL || 'caidas/swin2SR-classical-sr-x2-64';
-const UPI_ID = String(process.env.UPI_ID || '').trim();
-const UPI_QR_IMAGE_URL = String(process.env.UPI_QR_IMAGE_URL || '').trim();
-const PAYMENT_RECEIVER_NAME = String(process.env.PAYMENT_RECEIVER_NAME || '').trim();
-const PAYMENT_AMOUNT_MIN_PAISE = 500;
-const PAYMENT_AMOUNT_MAX_PAISE = 500000;
-const DEVICE_COOKIE = 'passport_device';
-const DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
-const SUPERVISOR_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const SUPERVISOR_WINDOW_MS = 15 * 60 * 1000;
-const SUPERVISOR_MAX_ATTEMPTS = 5;
-const SUPERVISOR_LOCKOUT_MS = 15 * 60 * 1000;
-const supervisorSessions = new Map();
-const supervisorAttempts = new Map();
-const supervisorCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [deviceId, session] of supervisorSessions) {
-    if (session.expiresAt <= now) supervisorSessions.delete(deviceId);
-  }
-  for (const [key, entry] of supervisorAttempts) {
-    if (entry.windowStarted + SUPERVISOR_WINDOW_MS <= now && entry.lockedUntil <= now) supervisorAttempts.delete(key);
-  }
-}, 10 * 60 * 1000);
-supervisorCleanupTimer.unref();
 const ADMIN_PATH_SECRET = String(process.env.ADMIN_PATH_SECRET || '')
   .trim()
   .replace(/^\/+|\/+$/g, '');
@@ -75,100 +46,6 @@ const ALLOWED_ORIGINS = (
 
 const app = express();
 console.log('[SERVER] Developer: Aman Singh');
-
-function parseCookies(header) {
-  const cookies = {};
-  for (const part of String(header || '').split(';')) {
-    const index = part.indexOf('=');
-    if (index < 0) continue;
-    const key = part.slice(0, index).trim();
-    try { cookies[key] = decodeURIComponent(part.slice(index + 1).trim()); } catch { /* ignore */ }
-  }
-  return cookies;
-}
-
-function cookieFlags() {
-  const secure = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
-  const sameSite = secure ? 'None' : 'Lax';
-  return `Path=/; Max-Age=${DEVICE_TTL_SECONDS}; HttpOnly; SameSite=${sameSite}${secure ? '; Secure' : ''}`;
-}
-
-function getDeviceId(req, res) {
-  const existing = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
-  if (existing && /^[A-Za-z0-9_-]{32,128}$/.test(existing)) return existing;
-  const deviceId = crypto.randomBytes(32).toString('base64url');
-  res.append('Set-Cookie', `${DEVICE_COOKIE}=${encodeURIComponent(deviceId)}; ${cookieFlags()}`);
-  return deviceId;
-}
-
-function identity(req, res) {
-  const deviceId = getDeviceId(req, res);
-  const session = supervisorSessions.get(deviceId);
-  const supervisorActive = Boolean(session && session.expiresAt > Date.now());
-  if (session && !supervisorActive) supervisorSessions.delete(deviceId);
-  return { deviceId, supervisorActive };
-}
-
-function verifySupervisorCode(code) {
-  try {
-    const parts = getSupervisorCodeHash().split('$');
-    if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
-    const N = Number(parts[1]);
-    const r = Number(parts[2]);
-    const p = Number(parts[3]);
-    if (!Number.isInteger(N) || N < 16384 || N > 1048576 || (N & (N - 1)) !== 0
-      || !Number.isInteger(r) || r < 1 || r > 32 || !Number.isInteger(p) || p < 1 || p > 8) return false;
-    const salt = Buffer.from(parts[4], 'base64');
-    const expected = Buffer.from(parts[5], 'base64');
-    if (salt.length < 16 || expected.length < 32 || expected.length > 128) return false;
-    const actual = crypto.scryptSync(String(code || ''), salt, expected.length, {
-      N, r, p, maxmem: Math.max(32 * 1024 * 1024, 128 * N * r + 1024),
-    });
-    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
-  } catch {
-    return false;
-  }
-}
-
-function supervisorAttemptKey(req, deviceId) {
-  return `${req.ip || 'unknown'}:${deviceId}`;
-}
-
-function supervisorLocked(key) {
-  const entry = supervisorAttempts.get(key);
-  if (!entry) return false;
-  if (entry.lockedUntil > Date.now()) return true;
-  if (entry.windowStarted + SUPERVISOR_WINDOW_MS <= Date.now()) supervisorAttempts.delete(key);
-  return false;
-}
-
-function recordSupervisorFailure(key) {
-  const now = Date.now();
-  const entry = supervisorAttempts.get(key);
-  if (!entry || entry.windowStarted + SUPERVISOR_WINDOW_MS <= now) {
-    supervisorAttempts.set(key, { count: 1, windowStarted: now, lockedUntil: 0 });
-    return;
-  }
-  entry.count += 1;
-  if (entry.count >= SUPERVISOR_MAX_ATTEMPTS) entry.lockedUntil = now + SUPERVISOR_LOCKOUT_MS;
-}
-
-function accountResponse(deviceId, supervisorActive) {
-  return {
-    ...walletSummary(deviceId),
-    supervisorActive,
-    supervisorConfigured: Boolean(getSupervisorCodeHash()),
-    manualPaymentsConfigured: Boolean(UPI_ID),
-  };
-}
-
-function activeSupervisorSessionCount() {
-  const now = Date.now();
-  for (const [deviceId, session] of supervisorSessions) {
-    if (session.expiresAt <= now) supervisorSessions.delete(deviceId);
-  }
-  return supervisorSessions.size;
-}
 
 // -------------------------------
 // REQUEST LOGGING
@@ -227,121 +104,8 @@ app.use(
     origin: ALLOWED_ORIGINS.includes('*')
       ? true
       : ALLOWED_ORIGINS,
-    credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Requested-With'],
   })
 );
-
-app.get('/api/account', (req, res) => {
-  const { deviceId, supervisorActive } = identity(req, res);
-  res.set('Cache-Control', 'no-store');
-  res.json(accountResponse(deviceId, supervisorActive));
-});
-
-app.post('/api/supervisor/activate', express.json({ limit: '4kb' }), (req, res) => {
-  const { deviceId } = identity(req, res);
-  const key = supervisorAttemptKey(req, deviceId);
-  if (supervisorLocked(key)) return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
-  const code = typeof req.body?.code === 'string' ? req.body.code : '';
-  if (!verifySupervisorCode(code)) {
-    recordSupervisorFailure(key);
-    return res.status(401).json({ error: 'Invalid supervisor code' });
-  }
-  supervisorAttempts.delete(key);
-  supervisorSessions.set(deviceId, { activatedAt: Date.now(), expiresAt: Date.now() + SUPERVISOR_SESSION_TTL_MS });
-  res.json({ ok: true, message: 'Supervisor mode activated', ...accountResponse(deviceId, true) });
-});
-
-function paymentConfig() {
-  let qrImageUrl = null;
-  if (UPI_QR_IMAGE_URL) {
-    try {
-      const parsed = new URL(UPI_QR_IMAGE_URL);
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') qrImageUrl = parsed.toString();
-    } catch {
-      qrImageUrl = null;
-    }
-  }
-  return {
-    configured: Boolean(UPI_ID),
-    upiId: UPI_ID || null,
-    qrImageUrl,
-    receiverName: PAYMENT_RECEIVER_NAME || null,
-  };
-}
-
-app.get('/api/payment-config', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(paymentConfig());
-});
-app.get('/api/payments/config', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(paymentConfig());
-});
-
-function submitManualPayment(req, res) {
-  if (!UPI_ID) return res.status(503).json({ error: 'Manual payments are not configured', code: 'PAYMENTS_NOT_CONFIGURED' });
-  const { deviceId } = identity(req, res);
-  const amountRupees = Number(req.body?.amountRupees ?? req.body?.amount);
-  const amountPaise = Math.round(amountRupees * 100);
-  const rawUtr = req.body?.utr ?? req.body?.transactionReference;
-  const utr = typeof rawUtr === 'string' ? rawUtr.trim() : '';
-  const payerName = typeof req.body?.payerName === 'string' ? req.body.payerName.trim() : '';
-  const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : '';
-  if (!Number.isFinite(amountRupees) || !Number.isInteger(amountPaise)
-    || Math.abs(amountRupees * 100 - amountPaise) > 1e-9
-    || amountPaise < PAYMENT_AMOUNT_MIN_PAISE || amountPaise > PAYMENT_AMOUNT_MAX_PAISE) {
-    return res.status(400).json({ error: 'Amount must be between ₹5 and ₹5,000.' });
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9 ._:/-]{5,63}$/.test(utr)) {
-    return res.status(400).json({ error: 'Enter a valid UTR or transaction reference (6–64 characters).' });
-  }
-  if (payerName.length > 120) return res.status(400).json({ error: 'Payer name must be 120 characters or fewer.' });
-  if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
-    return res.status(400).json({ error: 'Invalid idempotency key.' });
-  }
-  const result = createManualPayment({
-    deviceId, amountPaise, utr, payerName, idempotencyKey: idempotencyKey || null,
-  });
-  const claimResponse = claim => ({
-    id: claim.id,
-    amountPaise: claim.amount_paise,
-    utr: claim.utr,
-    payerName: claim.payer_name || '',
-    status: claim.status,
-    createdAt: claim.created_at,
-    updatedAt: claim.updated_at,
-  });
-  if (result.duplicateUtr) return res.status(409).json({ error: 'This UTR has already been submitted.', claim: claimResponse(result.claim) });
-  if (result.duplicate) return res.json({ ok: true, duplicate: true, claim: claimResponse(result.claim) });
-  res.status(201).json({
-    ok: true,
-    claim: claimResponse(result.claim),
-    message: 'Payment claim submitted. Credits appear after manual verification.',
-  });
-}
-
-app.post('/api/payments/claim', express.json({ limit: '10kb' }), submitManualPayment);
-app.post('/api/payments/manual', express.json({ limit: '10kb' }), submitManualPayment);
-
-app.post('/api/usage/authorize', express.json({ limit: '10kb' }), (req, res) => {
-  const { deviceId, supervisorActive } = identity(req, res);
-  const operation = req.body?.operation;
-  const idempotencyKey = typeof req.body?.idempotencyKey === 'string'
-    ? req.body.idempotencyKey.slice(0, 128)
-    : '';
-  if (operation !== 'word_download' || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
-    return res.status(400).json({ error: 'A valid operation and idempotency key are required' });
-  }
-  const result = reserveUsage(deviceId, operation, idempotencyKey, supervisorActive);
-  if (!result.allowed) {
-    const status = result.code === 'INSUFFICIENT_BALANCE' ? 402 : 400;
-    return res.status(status).json({ error: result.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient wallet balance. Add credits by UPI and wait for manual verification.' : 'Usage could not be authorized', code: result.code, account: accountResponse(deviceId, supervisorActive) });
-  }
-  completeUsage(result.usageId);
-  res.json({ ok: true, chargedPaise: result.chargedPaise, freeUse: result.freeUse, account: accountResponse(deviceId, supervisorActive) });
-});
 
 // -------------------------------
 // FILE UPLOAD
@@ -546,7 +310,6 @@ app.post(
     }
 
    const uploadId = crypto.randomUUID();
-   const { deviceId, supervisorActive } = identity(req, res);
    const originalFileName = `${uploadId}-original${path.extname(req.file.originalname).toLowerCase() || '.bin'}`;
    const originalPath = path.join(uploadsDir, originalFileName);
    fs.writeFileSync(originalPath, req.file.buffer);
@@ -567,8 +330,6 @@ app.post(
      createdAt: new Date().toISOString(),
    });
 
-   let usageId = null;
-   let apiReserved = false;
    try {
      if (!REMOVE_BG_API_KEY || REMOVE_BG_API_KEY === 'your_remove_bg_api_key_here') {
        failUpload(uploadId, 'remove.bg is not configured');
@@ -577,30 +338,14 @@ app.post(
        });
      }
 
-     if (!supervisorActive) {
-       const usage = reserveApiRequest(REMOVE_BG_MONTHLY_LIMIT);
-       if (!usage.allowed) {
-         failUpload(uploadId, 'remove.bg monthly limit reached');
-         return res.status(429).json({
-           error: 'Monthly remove.bg API limit reached',
-           code: 'REMOVE_BG_LIMIT',
-           usage: { used: usage.used, limit: usage.limit, remaining: usage.remaining },
-         });
-       }
-       apiReserved = true;
-     }
-
-     const authorization = reserveUsage(deviceId, 'remove_bg', crypto.randomUUID(), supervisorActive);
-     if (!authorization.allowed) {
-       if (apiReserved) releaseApiRequest();
-       failUpload(uploadId, 'wallet balance is insufficient');
-       return res.status(402).json({
-         error: 'Insufficient wallet balance. Add credits by UPI and wait for manual verification.',
-         code: 'INSUFFICIENT_BALANCE',
-         account: accountResponse(deviceId, supervisorActive),
+     const usage = reserveApiRequest(REMOVE_BG_MONTHLY_LIMIT);
+     if (!usage.allowed) {
+       failUpload(uploadId, 'remove.bg monthly limit reached');
+       return res.status(429).json({
+         error: 'Monthly remove.bg API limit reached',
+         usage: { used: usage.used, limit: usage.limit, remaining: usage.remaining },
        });
      }
-     usageId = authorization.usageId;
 
      console.log(
        `[REMOVE-BG] Upload: ` +
@@ -643,8 +388,6 @@ app.post(
      if (!removeBgResponse.ok) {
        const responseText = await removeBgResponse.text();
        console.error('[REMOVE-BG] remove.bg request failed:', removeBgResponse.status, responseText);
-       if (usageId) voidUsage(usageId);
-       if (apiReserved) releaseApiRequest();
        failUpload(uploadId, `remove.bg request failed with status ${removeBgResponse.status}`);
        return res.status(removeBgResponse.status).json({
          error: 'remove.bg background removal failed',
@@ -653,29 +396,19 @@ app.post(
      }
 
      const processedImage = Buffer.from(await removeBgResponse.arrayBuffer());
-     if (processedImage.length === 0) throw new Error('remove.bg returned an empty image');
      const processedFileName = `${uploadId}-processed.png`;
      fs.writeFileSync(path.join(uploadsDir, processedFileName), processedImage);
      completeUpload(uploadId, processedFileName, processedImage.length);
-     if (usageId) completeUsage(usageId);
-     if (apiReserved) completeApiRequest();
 
      console.log(
        `[REMOVE-BG] Success | ${processedImage.length} bytes`
      );
      logEvent(`Background removal succeeded (${processedImage.length} bytes)`, { path: '/api/remove-bg' });
 
-     res.set('X-Usage-Charged-Paise', String(authorization?.chargedPaise || 0));
      res.type('png').send(processedImage);
    } catch (err) {
      console.error('[REMOVE-BG] FAILED:', err);
      logEvent(`Background removal failed: ${err.message}`, { path: '/api/remove-bg', status: 500 });
-     if (usageId) {
-       try { voidUsage(usageId); } catch (rollbackError) { console.error('[REMOVE-BG] Wallet rollback failed:', rollbackError.message); }
-     }
-     if (apiReserved) {
-       try { releaseApiRequest(); } catch (rollbackError) { console.error('[REMOVE-BG] API quota rollback failed:', rollbackError.message); }
-     }
      failUpload(uploadId, err.message || 'Background removal failed');
 
      if (err && err.cause && err.cause.code === 'ENOTFOUND') {
@@ -718,16 +451,6 @@ if (ADMIN_PATH_SECRET && /^[A-Za-z0-9_-]{8,128}$/.test(ADMIN_PATH_SECRET)) {
       fs.writeFileSync(siteStateFile, JSON.stringify(siteState, null, 2), { mode: 0o600 });
       return siteState;
     },
-    getAdminSummary: options => getAdminSummary({
-      ...options,
-      removeBgLimit: REMOVE_BG_MONTHLY_LIMIT,
-      activeSupervisorSessions: activeSupervisorSessionCount(),
-    }),
-    listManualPayments,
-    approveManualPayment,
-    rejectManualPayment,
-    setSupervisorCode,
-    clearSupervisorSessions: () => supervisorSessions.clear(),
     secureCookies: process.env.ADMIN_COOKIE_SECURE === 'true',
   }));
   console.log('[ADMIN] Panel enabled at configured secret path');
@@ -752,7 +475,6 @@ app.listen(PORT, () => {
   console.log(`[CONFIG] Gemini AI: ${GEMINI_API_KEY ? 'configured' : 'not configured (optional)'}`);
   console.log(`[CONFIG] Hugging Face AI: ${HF_API_TOKEN ? `configured (${HF_ENHANCE_MODEL})` : 'not configured (optional)'}`);
   console.log(`[CONFIG] remove.bg: ${REMOVE_BG_API_KEY ? 'configured' : 'not configured'}`);
-  console.log(`[CONFIG] Manual UPI payments: ${UPI_ID ? 'configured' : 'not configured'}`);
   console.log(
     `Passport photo backend running on http://localhost:${PORT}`
   );

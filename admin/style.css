@@ -17,8 +17,4 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid #3b3b3b; text-align: left; padding: 9px 7px; white-space: nowrap; }
 th { color: #d9a628; font-weight: 600; }
 .hint { color: #9ca8bb; font-size: 13px; }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-.stat { background: #151922; border: 1px solid #303744; border-radius: 9px; padding: 14px; }
-.stat span, .stat small { display: block; color: #9ca8bb; font-size: 12px; }
-.stat strong { display: block; font-size: 22px; margin: 7px 0 3px; }
 textarea:focus, input:focus { outline: 2px solid #3b82f6; outline-offset: 1px; }
