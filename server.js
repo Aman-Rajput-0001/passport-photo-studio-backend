@@ -44,7 +44,7 @@ const ALLOWED_ORIGINS = (
   .map(s => s.trim());
 
 const app = express();
-console.log('[SERVER] Developer: Aman Somvanshi');
+console.log('[SERVER] Developer: Aman Singh');
 
 // -------------------------------
 // REQUEST LOGGING
