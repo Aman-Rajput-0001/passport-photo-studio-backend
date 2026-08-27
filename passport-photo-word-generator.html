@@ -29,6 +29,7 @@
     border:1px solid var(--line);padding:7px 12px;border-radius:20px;
   }
   .usage-limit{color:var(--danger,#c1503a);}
+  .supervisor-active{display:block;color:var(--accent-2);font-weight:700;}
   .trust-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:24px 0 12px;}
   .trust-card{padding:12px 13px;background:rgba(36,34,32,.72);border:1px solid var(--line);border-radius:9px;}
   .trust-card strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:13px;margin-bottom:4px;}
@@ -101,6 +102,13 @@
   .supervisor-form{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
   .supervisor-form input{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;color:var(--ink);font:13px 'IBM Plex Mono',monospace;}
   .account-message{color:var(--muted);font-size:12px;margin:10px 0 0;line-height:1.4;}
+  .manual-payment{margin-top:14px;padding:13px 14px;background:rgba(217,166,40,.08);border:1px solid rgba(217,166,40,.35);border-radius:9px;}
+  .manual-payment form{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:10px;}
+  .manual-payment label{display:block;color:var(--muted);font-size:11px;}
+  .manual-payment input{display:block;width:100%;margin-top:5px;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:8px;color:var(--ink);}
+  .manual-payment button{grid-column:1/-1;justify-self:start;background:var(--accent);color:var(--accent-ink);border:0;border-radius:6px;padding:8px 12px;cursor:pointer;font-weight:600;}
+  .upi-id{font-family:'IBM Plex Mono',monospace;color:var(--accent);margin:8px 0;}
+  .payment-qr{display:block;width:150px;height:150px;object-fit:contain;background:#fff;border-radius:6px;margin:8px 0;}
   .ai-option{display:flex;align-items:flex-start;gap:10px;margin:14px 0;padding:13px 14px;background:rgba(79,140,130,.12);border:1px solid rgba(79,140,130,.45);border-radius:9px;cursor:pointer;}
   .ai-option input{accent-color:var(--accent-2);width:16px;height:16px;margin-top:2px;}
   .ai-option strong{display:block;font-size:13px;color:var(--ink);}
@@ -132,6 +140,7 @@
     .chip-row{padding-left:0;flex-wrap:wrap;}
     .bg-custom,.bg-note{padding-left:0;}
     .ai-option{margin-top:12px;}
+    .manual-payment form{grid-template-columns:1fr;}
     .footer{display:block;line-height:1.8;}
   }
 </style>
@@ -160,11 +169,20 @@
     <div id="apiUsage" class="fixed-size">Background removal usage: loading…</div>
     <div class="account-card">
       <div class="account-line"><strong id="accountBalance">Free uses and wallet: loading…</strong><span id="supervisorStatus"></span></div>
-      <div class="account-actions" id="rechargeActions">
-        <button type="button" data-recharge="5000">Recharge ₹50</button>
-        <button type="button" data-recharge="10000">Recharge ₹100</button>
-        <button type="button" data-recharge="20000">Recharge ₹200</button>
-      </div>
+      <section class="manual-payment" id="manualPayment">
+        <strong>Add wallet credits by UPI</strong>
+        <p id="paymentInstructions" class="account-message">Pay using UPI, then submit your UTR. Credits appear after manual verification. No Firebase account is required.</p>
+        <p id="paymentReceiver" class="account-message"></p>
+        <p id="paymentUpi" class="upi-id"></p>
+        <img id="paymentQr" class="payment-qr hidden" alt="UPI payment QR code">
+        <form id="paymentClaimForm">
+          <label>Amount (₹)<input id="paymentAmount" type="number" min="5" max="5000" step="0.01" required></label>
+          <label>UTR / transaction reference<input id="paymentUtr" required minlength="6" maxlength="64" autocomplete="off"></label>
+          <label>Payer name (optional)<input id="paymentPayerName" maxlength="120" autocomplete="name"></label>
+          <button type="submit">Submit payment claim</button>
+        </form>
+        <p id="paymentMessage" class="account-message" role="status"></p>
+      </section>
       <form class="supervisor-form" id="supervisorForm">
         <input id="supervisorCode" type="password" autocomplete="off" placeholder="Father-only supervisor code" aria-label="Supervisor code">
         <button type="submit">Activate supervisor mode</button>
@@ -333,8 +351,8 @@
   const USAGE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/usage`;
   const ACCOUNT_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/account`;
   const SUPERVISOR_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/supervisor/activate`;
-  const PAYMENT_ORDER_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payments/order`;
-  const PAYMENT_VERIFY_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payments/verify`;
+  const PAYMENT_CONFIG_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payment-config`;
+  const PAYMENT_CLAIM_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payments/claim`;
   let toastTimer = null;
   console.log('[Passport Photo] Background API configured:', REMOVE_BG_ENDPOINT);
 
@@ -343,18 +361,16 @@
       const response = await fetch(ACCOUNT_ENDPOINT, { cache: 'no-store', credentials: 'include' });
       if(!response.ok) throw new Error(`account request failed: ${response.status}`);
       const account = await response.json();
-      el('accountBalance').textContent = `Free uses: ${account.freeUsesRemaining} · Wallet: ₹${Number(account.balanceRupees).toFixed(2)}`;
-      el('supervisorStatus').textContent = account.supervisorActive ? 'Supervisor mode activated' : '';
+      el('accountBalance').textContent = account.supervisorActive
+        ? 'Supervisor mode: unlimited free use'
+        : `Free uses: ${account.freeUsesRemaining} · Wallet: ₹${Number(account.balanceRupees).toFixed(2)}`;
+      el('supervisorStatus').textContent = account.supervisorActive ? 'Supervisor mode activated — all uses are free' : '';
+      el('supervisorStatus').classList.toggle('supervisor-active', account.supervisorActive);
       el('supervisorStatus').style.color = account.supervisorActive ? 'var(--accent-2)' : '';
-      document.querySelectorAll('[data-recharge]').forEach(button=>{
-        button.disabled = !account.razorpayConfigured || account.supervisorActive;
-        button.title = account.razorpayConfigured ? '' : 'Payments are not configured';
-      });
       const supervisorButton = el('supervisorForm').querySelector('button');
       supervisorButton.disabled = !account.supervisorConfigured || account.supervisorActive;
       el('supervisorCode').disabled = !account.supervisorConfigured || account.supervisorActive;
       if(!account.supervisorConfigured) el('supervisorForm').title = 'Supervisor mode is not configured';
-      if(!account.razorpayConfigured) el('accountMessage').textContent = 'Payments are not configured on this server. Five free uses still work.';
       return account;
     }catch(error){
       el('accountBalance').textContent = 'Free uses and wallet are currently unavailable';
@@ -365,61 +381,50 @@
   refreshAccount();
   setInterval(refreshAccount, 15000);
 
-  let razorpayLoader = null;
-  function loadRazorpay(){
-    if(window.Razorpay) return Promise.resolve();
-    if(razorpayLoader) return razorpayLoader;
-    razorpayLoader = new Promise((resolve, reject)=>{
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = resolve;
-      script.onerror = ()=>reject(new Error('Razorpay checkout could not be loaded'));
-      document.head.appendChild(script);
-    });
-    return razorpayLoader;
-  }
-  async function startRecharge(amountPaise){
-    const message = el('accountMessage');
-    message.textContent = 'Creating secure payment order…';
+  async function loadPaymentConfig(){
     try{
-      const response = await fetch(PAYMENT_ORDER_ENDPOINT, {
-        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ amountPaise })
-      });
-      const order = await response.json().catch(()=>({}));
-      if(!response.ok) throw new Error(order.error || 'Could not create payment order');
-      await loadRazorpay();
-      const checkout = new window.Razorpay({
-        key: order.keyId,
-        amount: order.amountPaise,
-        currency: order.currency,
-        name: 'Passport Photo Studio',
-        description: 'Wallet recharge',
-        order_id: order.orderId,
-        handler: async payment=>{
-          try{
-            const verify = await fetch(PAYMENT_VERIFY_ENDPOINT, {
-              method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify(payment)
-            });
-            const result = await verify.json().catch(()=>({}));
-            if(!verify.ok) throw new Error(result.error || 'Payment verification failed');
-            message.textContent = 'Payment successful. Wallet balance updated.';
-            await refreshAccount();
-          }catch(error){
-            message.textContent = error.message;
-          }
-        },
-        modal:{ ondismiss:()=>{ message.textContent = 'Payment cancelled.'; } }
-      });
-      checkout.on('payment.failed', ()=>{ message.textContent = 'Payment failed. No wallet balance was added.'; });
-      checkout.open();
+      const response = await fetch(PAYMENT_CONFIG_ENDPOINT, { cache:'no-store' });
+      const config = await response.json();
+      if(!response.ok || !config.configured) throw new Error('Manual UPI payments are not configured.');
+      el('paymentUpi').textContent = `UPI ID: ${config.upiId}`;
+      el('paymentReceiver').textContent = config.receiverName ? `Receiver: ${config.receiverName}` : '';
+      if(config.qrImageUrl){
+        el('paymentQr').src = config.qrImageUrl;
+        el('paymentQr').classList.remove('hidden');
+      }
     }catch(error){
-      message.textContent = error.message;
+      el('paymentInstructions').textContent = error.message;
+      el('paymentClaimForm').classList.add('hidden');
     }
   }
-  document.querySelectorAll('[data-recharge]').forEach(button=>{
-    button.addEventListener('click', ()=>startRecharge(Number(button.dataset.recharge)));
+  loadPaymentConfig();
+  el('paymentClaimForm').addEventListener('submit', async event=>{
+    event.preventDefault();
+    const form = event.currentTarget;
+    const message = el('paymentMessage');
+    const submit = form.querySelector('button');
+    submit.disabled = true;
+    message.textContent = 'Submitting payment claim…';
+    try{
+      const response = await fetch(PAYMENT_CLAIM_ENDPOINT, {
+        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          amountRupees: Number(el('paymentAmount').value),
+          utr: el('paymentUtr').value.trim(),
+          payerName: el('paymentPayerName').value.trim(),
+          idempotencyKey: `${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`.replace(/[^A-Za-z0-9_-]/g, ''),
+        }),
+      });
+      const result = await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(result.error || 'Payment claim could not be submitted.');
+      message.textContent = 'Claim submitted. Credits appear after manual verification.';
+      form.reset();
+      await refreshAccount();
+    }catch(error){
+      message.textContent = error.message;
+    }finally{
+      submit.disabled = false;
+    }
   });
   el('supervisorForm').addEventListener('submit', async event=>{
     event.preventDefault();
@@ -711,7 +716,7 @@
       try { errorPayload = JSON.parse(errorText); } catch {}
       if(resp.status === 402 || errorPayload.code === 'INSUFFICIENT_BALANCE'){
         refreshAccount();
-        const paymentError = new Error(errorPayload.error || 'Please recharge your wallet to continue.');
+        const paymentError = new Error(errorPayload.error || 'Please add wallet credits by UPI and wait for manual verification.');
         paymentError.code = 'PAYMENT_REQUIRED';
         throw paymentError;
       }

@@ -17,7 +17,9 @@ require('dotenv').config();
 const {
   uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage,
   reserveApiRequest, completeApiRequest, releaseApiRequest, walletSummary,
-  reserveUsage, completeUsage, voidUsage, createPayment, creditPayment,
+  reserveUsage, completeUsage, voidUsage, createManualPayment, listManualPayments,
+  approveManualPayment, rejectManualPayment,
+  getSupervisorCodeHash, getAdminSummary, setSupervisorCode,
 } = require('./database');
 const { createAdminRouter } = require('./admin/router');
 
@@ -29,10 +31,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-image';
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_ENHANCE_MODEL = process.env.HF_ENHANCE_MODEL || 'caidas/swin2SR-classical-sr-x2-64';
-const RAZORPAY_KEY_ID = String(process.env.RAZORPAY_KEY_ID || '').trim();
-const RAZORPAY_KEY_SECRET = String(process.env.RAZORPAY_KEY_SECRET || '').trim();
-const RAZORPAY_WEBHOOK_SECRET = String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
-const SUPERVISOR_CODE_HASH = String(process.env.SUPERVISOR_CODE_HASH || '').trim();
+const UPI_ID = String(process.env.UPI_ID || '').trim();
+const UPI_QR_IMAGE_URL = String(process.env.UPI_QR_IMAGE_URL || '').trim();
+const PAYMENT_RECEIVER_NAME = String(process.env.PAYMENT_RECEIVER_NAME || '').trim();
 const PAYMENT_AMOUNT_MIN_PAISE = 500;
 const PAYMENT_AMOUNT_MAX_PAISE = 500000;
 const DEVICE_COOKIE = 'passport_device';
@@ -110,7 +111,7 @@ function identity(req, res) {
 
 function verifySupervisorCode(code) {
   try {
-    const parts = SUPERVISOR_CODE_HASH.split('$');
+    const parts = getSupervisorCodeHash().split('$');
     if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
     const N = Number(parts[1]);
     const r = Number(parts[2]);
@@ -156,9 +157,17 @@ function accountResponse(deviceId, supervisorActive) {
   return {
     ...walletSummary(deviceId),
     supervisorActive,
-    supervisorConfigured: Boolean(SUPERVISOR_CODE_HASH),
-    razorpayConfigured: Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET),
+    supervisorConfigured: Boolean(getSupervisorCodeHash()),
+    manualPaymentsConfigured: Boolean(UPI_ID),
   };
+}
+
+function activeSupervisorSessionCount() {
+  const now = Date.now();
+  for (const [deviceId, session] of supervisorSessions) {
+    if (session.expiresAt <= now) supervisorSessions.delete(deviceId);
+  }
+  return supervisorSessions.size;
 }
 
 // -------------------------------
@@ -224,41 +233,6 @@ app.use(
   })
 );
 
-// Razorpay signs the exact raw request body. Keep this route before any JSON parser.
-app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '100kb' }), (req, res) => {
-  if (!RAZORPAY_WEBHOOK_SECRET) return res.status(503).json({ error: 'Payment webhooks are not configured' });
-  const supplied = req.get('X-Razorpay-Signature') || '';
-  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
-  const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET).update(rawBody).digest('hex');
-  const suppliedBuffer = Buffer.from(supplied);
-  const expectedBuffer = Buffer.from(expected);
-  if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
-    return res.status(400).json({ error: 'Invalid webhook signature' });
-  }
-  try {
-    const payload = JSON.parse(rawBody.toString('utf8'));
-    const event = payload.event;
-    if (event === 'payment.captured' || event === 'order.paid') {
-      const payment = payload.payload?.payment?.entity || {};
-      const order = payload.payload?.order?.entity || {};
-      const orderId = payment.order_id || order.id;
-      if (orderId) {
-        creditPayment({
-          deviceId: null,
-          orderId,
-          paymentId: payment.id || null,
-          amountPaise: Number(payment.amount || order.amount || 0),
-          status: 'captured',
-        });
-      }
-    }
-    return res.json({ ok: true });
-  } catch (error) {
-    console.error('[PAYMENTS] Webhook processing failed:', error.message);
-    return res.status(400).json({ error: 'Invalid webhook payload' });
-  }
-});
-
 app.get('/api/account', (req, res) => {
   const { deviceId, supervisorActive } = identity(req, res);
   res.set('Cache-Control', 'no-store');
@@ -270,7 +244,7 @@ app.post('/api/supervisor/activate', express.json({ limit: '4kb' }), (req, res) 
   const key = supervisorAttemptKey(req, deviceId);
   if (supervisorLocked(key)) return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
   const code = typeof req.body?.code === 'string' ? req.body.code : '';
-  if (!SUPERVISOR_CODE_HASH || !verifySupervisorCode(code)) {
+  if (!verifySupervisorCode(code)) {
     recordSupervisorFailure(key);
     return res.status(401).json({ error: 'Invalid supervisor code' });
   }
@@ -279,59 +253,77 @@ app.post('/api/supervisor/activate', express.json({ limit: '4kb' }), (req, res) 
   res.json({ ok: true, message: 'Supervisor mode activated', ...accountResponse(deviceId, true) });
 });
 
-app.post('/api/payments/order', express.json({ limit: '10kb' }), async (req, res) => {
-  const { deviceId } = identity(req, res);
-  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
-    return res.status(503).json({ error: 'Payments are not configured', code: 'PAYMENTS_NOT_CONFIGURED' });
-  }
-  const amountPaise = Number(req.body?.amountPaise);
-  if (!Number.isInteger(amountPaise) || amountPaise < PAYMENT_AMOUNT_MIN_PAISE || amountPaise > PAYMENT_AMOUNT_MAX_PAISE) {
-    return res.status(400).json({ error: `Recharge amount must be between ₹${PAYMENT_AMOUNT_MIN_PAISE / 100} and ₹${PAYMENT_AMOUNT_MAX_PAISE / 100}.` });
-  }
-  try {
-    const receipt = `wallet_${crypto.randomBytes(10).toString('hex')}`;
-    const auth = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64');
-    const response = await fetch('https://api.razorpay.com/v1/orders', {
-      method: 'POST',
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: amountPaise, currency: 'INR', receipt, notes: { product: 'passport-photo-wallet' } }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.id) {
-      console.error('[PAYMENTS] Razorpay order failed:', response.status, payload);
-      return res.status(502).json({ error: 'Could not create a payment order. Try again later.' });
+function paymentConfig() {
+  let qrImageUrl = null;
+  if (UPI_QR_IMAGE_URL) {
+    try {
+      const parsed = new URL(UPI_QR_IMAGE_URL);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') qrImageUrl = parsed.toString();
+    } catch {
+      qrImageUrl = null;
     }
-    createPayment(deviceId, payload.id, amountPaise);
-    res.json({ orderId: payload.id, amountPaise, currency: 'INR', keyId: RAZORPAY_KEY_ID });
-  } catch (error) {
-    console.error('[PAYMENTS] Order creation failed:', error.message);
-    res.status(502).json({ error: 'Payment service is unavailable. Try again later.' });
   }
+  return {
+    configured: Boolean(UPI_ID),
+    upiId: UPI_ID || null,
+    qrImageUrl,
+    receiverName: PAYMENT_RECEIVER_NAME || null,
+  };
+}
+
+app.get('/api/payment-config', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(paymentConfig());
+});
+app.get('/api/payments/config', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(paymentConfig());
 });
 
-app.post('/api/payments/verify', express.json({ limit: '10kb' }), (req, res) => {
-  const { deviceId, supervisorActive } = identity(req, res);
-  const orderId = typeof req.body?.razorpay_order_id === 'string' ? req.body.razorpay_order_id : '';
-  const paymentId = typeof req.body?.razorpay_payment_id === 'string' ? req.body.razorpay_payment_id : '';
-  const signature = typeof req.body?.razorpay_signature === 'string' ? req.body.razorpay_signature : '';
-  if (!orderId || !paymentId || !signature || !RAZORPAY_KEY_SECRET) {
-    return res.status(400).json({ error: 'Incomplete payment verification details' });
+function submitManualPayment(req, res) {
+  if (!UPI_ID) return res.status(503).json({ error: 'Manual payments are not configured', code: 'PAYMENTS_NOT_CONFIGURED' });
+  const { deviceId } = identity(req, res);
+  const amountRupees = Number(req.body?.amountRupees ?? req.body?.amount);
+  const amountPaise = Math.round(amountRupees * 100);
+  const rawUtr = req.body?.utr ?? req.body?.transactionReference;
+  const utr = typeof rawUtr === 'string' ? rawUtr.trim() : '';
+  const payerName = typeof req.body?.payerName === 'string' ? req.body.payerName.trim() : '';
+  const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : '';
+  if (!Number.isFinite(amountRupees) || !Number.isInteger(amountPaise)
+    || Math.abs(amountRupees * 100 - amountPaise) > 1e-9
+    || amountPaise < PAYMENT_AMOUNT_MIN_PAISE || amountPaise > PAYMENT_AMOUNT_MAX_PAISE) {
+    return res.status(400).json({ error: 'Amount must be between ₹5 and ₹5,000.' });
   }
-  const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest('hex');
-  const suppliedBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-  if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
-    return res.status(400).json({ error: 'Payment signature verification failed' });
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._:/-]{5,63}$/.test(utr)) {
+    return res.status(400).json({ error: 'Enter a valid UTR or transaction reference (6–64 characters).' });
   }
-  try {
-    const payment = creditPayment({ deviceId, orderId, paymentId, amountPaise: 0, signature });
-    if (!payment || payment.device_id !== deviceId) return res.status(404).json({ error: 'Payment order not found' });
-    res.json({ ok: true, ...accountResponse(deviceId, supervisorActive) });
-  } catch (error) {
-    console.error('[PAYMENTS] Verification failed:', error.message);
-    res.status(400).json({ error: 'Payment could not be applied' });
+  if (payerName.length > 120) return res.status(400).json({ error: 'Payer name must be 120 characters or fewer.' });
+  if (idempotencyKey && !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+    return res.status(400).json({ error: 'Invalid idempotency key.' });
   }
-});
+  const result = createManualPayment({
+    deviceId, amountPaise, utr, payerName, idempotencyKey: idempotencyKey || null,
+  });
+  const claimResponse = claim => ({
+    id: claim.id,
+    amountPaise: claim.amount_paise,
+    utr: claim.utr,
+    payerName: claim.payer_name || '',
+    status: claim.status,
+    createdAt: claim.created_at,
+    updatedAt: claim.updated_at,
+  });
+  if (result.duplicateUtr) return res.status(409).json({ error: 'This UTR has already been submitted.', claim: claimResponse(result.claim) });
+  if (result.duplicate) return res.json({ ok: true, duplicate: true, claim: claimResponse(result.claim) });
+  res.status(201).json({
+    ok: true,
+    claim: claimResponse(result.claim),
+    message: 'Payment claim submitted. Credits appear after manual verification.',
+  });
+}
+
+app.post('/api/payments/claim', express.json({ limit: '10kb' }), submitManualPayment);
+app.post('/api/payments/manual', express.json({ limit: '10kb' }), submitManualPayment);
 
 app.post('/api/usage/authorize', express.json({ limit: '10kb' }), (req, res) => {
   const { deviceId, supervisorActive } = identity(req, res);
@@ -345,7 +337,7 @@ app.post('/api/usage/authorize', express.json({ limit: '10kb' }), (req, res) => 
   const result = reserveUsage(deviceId, operation, idempotencyKey, supervisorActive);
   if (!result.allowed) {
     const status = result.code === 'INSUFFICIENT_BALANCE' ? 402 : 400;
-    return res.status(status).json({ error: result.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient wallet balance. Please recharge to continue.' : 'Usage could not be authorized', code: result.code, account: accountResponse(deviceId, supervisorActive) });
+    return res.status(status).json({ error: result.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient wallet balance. Add credits by UPI and wait for manual verification.' : 'Usage could not be authorized', code: result.code, account: accountResponse(deviceId, supervisorActive) });
   }
   completeUsage(result.usageId);
   res.json({ ok: true, chargedPaise: result.chargedPaise, freeUse: result.freeUse, account: accountResponse(deviceId, supervisorActive) });
@@ -603,7 +595,7 @@ app.post(
        if (apiReserved) releaseApiRequest();
        failUpload(uploadId, 'wallet balance is insufficient');
        return res.status(402).json({
-         error: 'Insufficient wallet balance. Please recharge to continue.',
+         error: 'Insufficient wallet balance. Add credits by UPI and wait for manual verification.',
          code: 'INSUFFICIENT_BALANCE',
          account: accountResponse(deviceId, supervisorActive),
        });
@@ -726,6 +718,16 @@ if (ADMIN_PATH_SECRET && /^[A-Za-z0-9_-]{8,128}$/.test(ADMIN_PATH_SECRET)) {
       fs.writeFileSync(siteStateFile, JSON.stringify(siteState, null, 2), { mode: 0o600 });
       return siteState;
     },
+    getAdminSummary: options => getAdminSummary({
+      ...options,
+      removeBgLimit: REMOVE_BG_MONTHLY_LIMIT,
+      activeSupervisorSessions: activeSupervisorSessionCount(),
+    }),
+    listManualPayments,
+    approveManualPayment,
+    rejectManualPayment,
+    setSupervisorCode,
+    clearSupervisorSessions: () => supervisorSessions.clear(),
     secureCookies: process.env.ADMIN_COOKIE_SECURE === 'true',
   }));
   console.log('[ADMIN] Panel enabled at configured secret path');
@@ -750,6 +752,7 @@ app.listen(PORT, () => {
   console.log(`[CONFIG] Gemini AI: ${GEMINI_API_KEY ? 'configured' : 'not configured (optional)'}`);
   console.log(`[CONFIG] Hugging Face AI: ${HF_API_TOKEN ? `configured (${HF_ENHANCE_MODEL})` : 'not configured (optional)'}`);
   console.log(`[CONFIG] remove.bg: ${REMOVE_BG_API_KEY ? 'configured' : 'not configured'}`);
+  console.log(`[CONFIG] Manual UPI payments: ${UPI_ID ? 'configured' : 'not configured'}`);
   console.log(
     `Passport photo backend running on http://localhost:${PORT}`
   );

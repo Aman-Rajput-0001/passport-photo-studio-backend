@@ -62,18 +62,43 @@ db.exec(`
     UNIQUE(device_id, idempotency_key)
   );
   CREATE INDEX IF NOT EXISTS idx_usage_records_device ON usage_records(device_id, created_at);
-  CREATE TABLE IF NOT EXISTS payments (
+  CREATE TABLE IF NOT EXISTS manual_payments (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
-    razorpay_order_id TEXT NOT NULL UNIQUE,
-    razorpay_payment_id TEXT,
     amount_paise INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    signature TEXT,
+    utr TEXT NOT NULL,
+    payer_name TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+    idempotency_key TEXT,
+    rejection_reason TEXT,
+    approved_by TEXT,
+    rejected_by TEXT,
+    approved_at TEXT,
+    rejected_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(razorpay_payment_id) WHERE razorpay_payment_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS supervisor_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    code_hash TEXT,
+    updated_at TEXT NOT NULL
+  );
+`);
+const manualPaymentColumns = db.prepare('PRAGMA table_info(manual_payments)').all().map(column => column.name);
+if (!manualPaymentColumns.includes('payer_name')) db.exec('ALTER TABLE manual_payments ADD COLUMN payer_name TEXT');
+if (!manualPaymentColumns.includes('idempotency_key')) db.exec('ALTER TABLE manual_payments ADD COLUMN idempotency_key TEXT');
+if (!manualPaymentColumns.includes('rejection_reason')) db.exec('ALTER TABLE manual_payments ADD COLUMN rejection_reason TEXT');
+if (!manualPaymentColumns.includes('approved_by')) db.exec('ALTER TABLE manual_payments ADD COLUMN approved_by TEXT');
+if (!manualPaymentColumns.includes('rejected_by')) db.exec('ALTER TABLE manual_payments ADD COLUMN rejected_by TEXT');
+if (!manualPaymentColumns.includes('approved_at')) db.exec('ALTER TABLE manual_payments ADD COLUMN approved_at TEXT');
+if (!manualPaymentColumns.includes('rejected_at')) db.exec('ALTER TABLE manual_payments ADD COLUMN rejected_at TEXT');
+if (!manualPaymentColumns.includes('updated_at')) db.exec('ALTER TABLE manual_payments ADD COLUMN updated_at TEXT');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_manual_payments_created_at ON manual_payments(created_at);
+  CREATE INDEX IF NOT EXISTS idx_manual_payments_device ON manual_payments(device_id, created_at);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_payments_utr ON manual_payments(utr COLLATE NOCASE);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_payments_idempotency
+    ON manual_payments(device_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 `);
 const initialUsageMonth = new Date().toISOString().slice(0, 7);
 db.prepare(`
@@ -81,10 +106,36 @@ db.prepare(`
   VALUES ('remove.bg', ?, ?, 0)
   ON CONFLICT(service) DO NOTHING
 `).run(initialUsageMonth, Number(process.env.REMOVE_BG_INITIAL_USAGE || 4));
+db.prepare(`
+  INSERT OR IGNORE INTO supervisor_settings (id, code_hash, updated_at)
+  VALUES (1, ?, ?)
+`).run(String(process.env.SUPERVISOR_CODE_HASH || '').trim() || null, nowIso());
 
 const FREE_USES = 5;
 const CHARGE_PAISE = 500;
 function nowIso() { return new Date().toISOString(); }
+
+function getSupervisorCodeHash() {
+  const row = db.prepare('SELECT code_hash FROM supervisor_settings WHERE id = 1').get();
+  return String(row?.code_hash || '').trim();
+}
+
+function setSupervisorCode(code) {
+  let codeHash = null;
+  if (code !== null && code !== undefined && String(code).length > 0) {
+    const N = 16384;
+    const r = 8;
+    const p = 1;
+    const salt = crypto.randomBytes(16);
+    const hash = crypto.scryptSync(String(code), salt, 64, {
+      N, r, p, maxmem: 64 * 1024 * 1024,
+    });
+    codeHash = `scrypt$${N}$${r}$${p}$${salt.toString('base64')}$${hash.toString('base64')}`;
+  }
+  db.prepare('UPDATE supervisor_settings SET code_hash = ?, updated_at = ? WHERE id = 1')
+    .run(codeHash, nowIso());
+  return Boolean(codeHash);
+}
 
 function ensureWallet(deviceId) {
   const now = nowIso();
@@ -190,48 +241,106 @@ function voidUsage(usageId) {
   }
 }
 
-function creditPayment({ deviceId, orderId, paymentId, amountPaise, signature, status = 'captured' }) {
+function createManualPayment({ deviceId, amountPaise, utr, payerName, idempotencyKey }) {
+  ensureWallet(deviceId);
+  const existing = idempotencyKey
+    ? db.prepare('SELECT * FROM manual_payments WHERE device_id = ? AND idempotency_key = ?').get(deviceId, idempotencyKey)
+    : null;
+  if (existing) return { duplicate: true, claim: existing };
+  const existingUtr = db.prepare('SELECT * FROM manual_payments WHERE utr = ? COLLATE NOCASE').get(utr);
+  if (existingUtr) return { duplicateUtr: true, claim: existingUtr };
+
   const now = nowIso();
+  const id = crypto.randomUUID();
+  try {
+    db.prepare(`
+      INSERT INTO manual_payments
+        (id, device_id, amount_paise, utr, payer_name, status, idempotency_key, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `).run(id, deviceId, amountPaise, utr, payerName || null, idempotencyKey || null, now, now);
+  } catch (error) {
+    if (String(error.message).includes('manual_payments.utr')) {
+      const claim = db.prepare('SELECT * FROM manual_payments WHERE utr = ? COLLATE NOCASE').get(utr);
+      return { duplicateUtr: true, claim };
+    }
+    if (String(error.message).includes('manual_payments.device_id, manual_payments.idempotency_key')) {
+      const claim = db.prepare('SELECT * FROM manual_payments WHERE device_id = ? AND idempotency_key = ?').get(deviceId, idempotencyKey);
+      return { duplicate: true, claim };
+    }
+    throw error;
+  }
+  return { duplicate: false, claim: db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id) };
+}
+
+function listManualPayments(limit = 100, status = '') {
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  if (['pending', 'approved', 'rejected'].includes(status)) {
+    return db.prepare(`
+      SELECT id, device_id, amount_paise, utr, payer_name, status, rejection_reason,
+             approved_by, rejected_by, approved_at, rejected_at, created_at, updated_at
+      FROM manual_payments WHERE status = ? ORDER BY created_at DESC LIMIT ?
+    `).all(status, safeLimit);
+  }
+  return db.prepare(`
+    SELECT id, device_id, amount_paise, utr, payer_name, status, rejection_reason,
+           approved_by, rejected_by, approved_at, rejected_at, created_at, updated_at
+    FROM manual_payments ORDER BY created_at DESC LIMIT ?
+  `).all(safeLimit);
+}
+
+function approveManualPayment(id, approvedBy) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    let payment = db.prepare('SELECT * FROM payments WHERE razorpay_order_id = ?').get(orderId);
-    if (!payment) {
-      if (!deviceId) {
-        db.exec('COMMIT');
-        return null;
-      }
-      const id = crypto.randomUUID();
-      db.prepare(`
-        INSERT INTO payments (id, device_id, razorpay_order_id, razorpay_payment_id, amount_paise, status, signature, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, deviceId, orderId, paymentId || null, amountPaise, status, signature || null, now, now);
-      payment = { id, device_id: deviceId, amount_paise: amountPaise, status };
-    } else if (payment.status !== 'captured' && status === 'captured') {
-      db.prepare(`
-        UPDATE payments SET razorpay_payment_id = COALESCE(?, razorpay_payment_id),
-          status = 'captured', signature = COALESCE(?, signature), updated_at = ?
-        WHERE razorpay_order_id = ?
-      `).run(paymentId || null, signature || null, now, orderId);
-      db.prepare('UPDATE user_wallets SET balance_paise = balance_paise + ?, updated_at = ? WHERE device_id = ?')
-        .run(payment.amount_paise, now, payment.device_id);
-      payment.status = 'captured';
+    const claim = db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id);
+    if (!claim) {
+      db.exec('COMMIT');
+      return null;
     }
+    if (claim.status === 'approved' || claim.status === 'rejected') {
+      db.exec('COMMIT');
+      return claim;
+    }
+    ensureWallet(claim.device_id);
+    const now = nowIso();
+    db.prepare(`
+      UPDATE manual_payments
+      SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `).run(approvedBy, now, now, id);
+    db.prepare('UPDATE user_wallets SET balance_paise = balance_paise + ?, updated_at = ? WHERE device_id = ?')
+      .run(claim.amount_paise, now, claim.device_id);
     db.exec('COMMIT');
-    return db.prepare('SELECT * FROM payments WHERE razorpay_order_id = ?').get(orderId);
+    return db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id);
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
     throw error;
   }
 }
 
-function createPayment(deviceId, orderId, amountPaise) {
-  ensureWallet(deviceId);
-  const now = nowIso();
-  const id = crypto.randomUUID();
-  db.prepare(`
-    INSERT INTO payments (id, device_id, razorpay_order_id, amount_paise, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'created', ?, ?)
-  `).run(id, deviceId, orderId, amountPaise, now, now);
+function rejectManualPayment(id, rejectedBy, reason) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const claim = db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id);
+    if (!claim) {
+      db.exec('COMMIT');
+      return null;
+    }
+    if (claim.status !== 'pending') {
+      db.exec('COMMIT');
+      return claim;
+    }
+    const now = nowIso();
+    db.prepare(`
+      UPDATE manual_payments
+      SET status = 'rejected', rejection_reason = ?, rejected_by = ?, rejected_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `).run(reason || null, rejectedBy, now, now, id);
+    db.exec('COMMIT');
+    return db.prepare('SELECT * FROM manual_payments WHERE id = ?').get(id);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw error;
+  }
 }
 
 function createUpload(record) {
@@ -294,6 +403,73 @@ function getApiUsage(limit = 50) {
   return { used: row.request_count, limit, remaining: Math.max(0, limit - row.request_count), reserved: row.reserved_count || 0 };
 }
 
+function getAdminSummary({ removeBgLimit = 50, recentLimit = 20, activeSupervisorSessions = 0 } = {}) {
+  const paymentTotals = db.prepare(`
+    SELECT
+      COUNT(*) AS total_count,
+      COALESCE(SUM(amount_paise), 0) AS total_amount_paise,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+      COALESCE(SUM(CASE WHEN status = 'pending' THEN amount_paise ELSE 0 END), 0) AS pending_amount_paise,
+      SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+      COALESCE(SUM(CASE WHEN status = 'approved' THEN amount_paise ELSE 0 END), 0) AS approved_amount_paise,
+      SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
+      COALESCE(SUM(CASE WHEN status = 'rejected' THEN amount_paise ELSE 0 END), 0) AS rejected_amount_paise
+    FROM manual_payments
+  `).get();
+  const usageTotals = db.prepare(`
+    SELECT
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN free_use = 1 THEN 1 ELSE 0 END) AS free_count,
+      SUM(CASE WHEN free_use = 0 AND amount_paise > 0 THEN 1 ELSE 0 END) AS paid_count
+    FROM usage_records
+    WHERE status = 'completed'
+  `).get();
+  const recentManualPayments = db.prepare(`
+    SELECT id, device_id, amount_paise, utr, payer_name, status, rejection_reason,
+           approved_by, rejected_by, approved_at, rejected_at, created_at, updated_at
+    FROM manual_payments
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(recentLimit);
+  const recentUsage = db.prepare(`
+    SELECT id, device_id, operation, status, amount_paise, free_use, created_at, completed_at
+    FROM usage_records
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(recentLimit);
+  const amountSummary = amountPaise => ({
+    paise: Number(amountPaise || 0),
+    rupees: Number(amountPaise || 0) / 100,
+  });
+  return {
+    removeBg: getApiUsage(removeBgLimit),
+    usage: {
+      totalCount: Number(usageTotals?.total_count || 0),
+      freeCount: Number(usageTotals?.free_count || 0),
+      paidCount: Number(usageTotals?.paid_count || 0),
+    },
+    activeSupervisorSessions: Number(activeSupervisorSessions || 0),
+    manualPayments: {
+      totalCount: Number(paymentTotals?.total_count || 0),
+      totalAmount: amountSummary(paymentTotals?.total_amount_paise),
+      pending: {
+        count: Number(paymentTotals?.pending_count || 0),
+        amount: amountSummary(paymentTotals?.pending_amount_paise),
+      },
+      approved: {
+        count: Number(paymentTotals?.approved_count || 0),
+        amount: amountSummary(paymentTotals?.approved_amount_paise),
+      },
+      rejected: {
+        count: Number(paymentTotals?.rejected_count || 0),
+        amount: amountSummary(paymentTotals?.rejected_amount_paise),
+      },
+    },
+    recentManualPayments,
+    recentUsage,
+  };
+}
+
 function reserveApiRequest(limit = 50) {
   const usage = getApiUsage(limit);
   if (usage.used + usage.reserved >= limit) return { allowed: false, ...usage };
@@ -312,5 +488,7 @@ function releaseApiRequest() {
 module.exports = {
   uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage,
   reserveApiRequest, completeApiRequest, releaseApiRequest, getWallet, walletSummary,
-  reserveUsage, completeUsage, voidUsage, createPayment, creditPayment,
+  reserveUsage, completeUsage, voidUsage, createManualPayment, listManualPayments,
+  approveManualPayment, rejectManualPayment,
+  getSupervisorCodeHash, setSupervisorCode, getAdminSummary,
 };

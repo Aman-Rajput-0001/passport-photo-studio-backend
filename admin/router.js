@@ -50,7 +50,20 @@ function verifyPassword(password, encodedHash) {
   }
 }
 
-function createAdminRouter({ basePath, listUploads, getLogs, getSiteState, setSiteState, secureCookies }) {
+function createAdminRouter({
+  basePath,
+  listUploads,
+  getLogs,
+  getSiteState,
+  setSiteState,
+  getAdminSummary,
+  listManualPayments,
+  approveManualPayment,
+  rejectManualPayment,
+  setSupervisorCode,
+  clearSupervisorSessions,
+  secureCookies,
+}) {
   const router = express.Router();
   const sessions = new Map();
   const loginAttempts = new Map();
@@ -208,6 +221,61 @@ function createAdminRouter({ basePath, listUploads, getLogs, getSiteState, setSi
     const message = req.body.message.trim().slice(0, 500);
     const state = setSiteState({ maintenance: req.body.maintenance, message });
     res.json(state);
+  });
+
+  router.get('/api/summary', requireSession, (req, res) => {
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 20;
+    res.json(getAdminSummary({ recentLimit: limit }));
+  });
+
+  router.get('/api/manual-payments', requireSession, (req, res) => {
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 500) : 100;
+    const status = typeof req.query.status === 'string' ? req.query.status : '';
+    if (status && !['pending', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid payment status' });
+    }
+    res.json({ payments: listManualPayments(limit, status) });
+  });
+
+  router.post('/api/manual-payments/:id/approve', requireSession, requireCsrf, (req, res) => {
+    const id = typeof req.params.id === 'string' ? req.params.id : '';
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Invalid payment claim id' });
+    const claim = approveManualPayment(id, req.adminSession.value.username);
+    if (!claim) return res.status(404).json({ error: 'Payment claim not found' });
+    res.json({ ok: true, claim });
+  });
+
+  router.post('/api/manual-payments/:id/reject', requireSession, requireCsrf, (req, res) => {
+    const id = typeof req.params.id === 'string' ? req.params.id : '';
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'Invalid payment claim id' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 240) : '';
+    const claim = rejectManualPayment(id, req.adminSession.value.username, reason);
+    if (!claim) return res.status(404).json({ error: 'Payment claim not found' });
+    res.json({ ok: true, claim });
+  });
+
+  router.post('/api/supervisor-code', requireSession, requireCsrf, (req, res) => {
+    const code = req.body?.code;
+    const confirmation = req.body?.confirmation;
+    if (typeof code !== 'string' || typeof confirmation !== 'string') {
+      return res.status(400).json({ error: 'code and confirmation must be text' });
+    }
+    if (code.length === 0 && confirmation.length === 0) {
+      setSupervisorCode(null);
+      clearSupervisorSessions();
+      return res.json({ ok: true, configured: false });
+    }
+    if (code.length < 8 || code.length > 256) {
+      return res.status(400).json({ error: 'Supervisor code must be between 8 and 256 characters' });
+    }
+    if (code !== confirmation) {
+      return res.status(400).json({ error: 'Supervisor code confirmation does not match' });
+    }
+    setSupervisorCode(code);
+    clearSupervisorSessions();
+    res.json({ ok: true, configured: true });
   });
 
   return router;

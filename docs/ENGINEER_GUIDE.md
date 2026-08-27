@@ -141,7 +141,9 @@ https://passport-photo-studio-backend.onrender.com/admin2008/
 3. Creates a server-side session in memory.
 4. Uses an HttpOnly/SameSite cookie.
 5. Protects mutations with CSRF validation.
-6. Exposes authenticated APIs for uploads, logs, maintenance, and messages.
+6. Exposes authenticated APIs for uploads, logs, maintenance, messages,
+   monetization summaries, manual UPI claim review, and supervisor-code management.
+   Supervisor codes are scrypt-hashed in SQLite and can be changed without restarting the server.
 
 If the page returns `404`, check Render logs for:
 
@@ -156,7 +158,8 @@ If it says panel disabled, `ADMIN_PATH_SECRET` is missing or invalid.
 `database.js` creates:
 
 ```text
-data/passport-photo.sqlite
+data/passport-photo.sqlite (uploads, wallets, manual payment claims, usage, and
+the hashed supervisor setting)
 data/uploads/<id>-original.<ext>
 data/uploads/<id>-processed.png
 data/site-state.json
@@ -181,6 +184,9 @@ with object storage such as S3, Cloudinary, or Supabase Storage.
 | `HF_ENHANCE_MODEL` | Hugging Face model name |
 | `GEMINI_API_KEY` | optional Gemini fallback |
 | `GEMINI_MODEL` | Gemini model name |
+| `UPI_ID` | public receiver UPI ID |
+| `UPI_QR_IMAGE_URL` | public QR image URL |
+| `PAYMENT_RECEIVER_NAME` | public receiver display name |
 | `ADMIN_USERNAME` | admin login name |
 | `ADMIN_PASSWORD_HASH` | scrypt password hash |
 | `ADMIN_PATH_SECRET` | hidden admin URL path |
