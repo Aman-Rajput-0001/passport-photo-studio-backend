@@ -14,7 +14,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const { uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage, reserveApiRequest } = require('./database');
+const {
+  uploadsDir, createUpload, completeUpload, failUpload, listUploads, getApiUsage,
+  reserveApiRequest, completeApiRequest, releaseApiRequest, walletSummary,
+  reserveUsage, completeUsage, voidUsage, createPayment, creditPayment,
+} = require('./database');
 const { createAdminRouter } = require('./admin/router');
 
 const PORT = process.env.PORT || 8787;
@@ -25,6 +29,30 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-image';
 const HF_API_TOKEN = process.env.HF_API_TOKEN;
 const HF_ENHANCE_MODEL = process.env.HF_ENHANCE_MODEL || 'caidas/swin2SR-classical-sr-x2-64';
+const RAZORPAY_KEY_ID = String(process.env.RAZORPAY_KEY_ID || '').trim();
+const RAZORPAY_KEY_SECRET = String(process.env.RAZORPAY_KEY_SECRET || '').trim();
+const RAZORPAY_WEBHOOK_SECRET = String(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+const SUPERVISOR_CODE_HASH = String(process.env.SUPERVISOR_CODE_HASH || '').trim();
+const PAYMENT_AMOUNT_MIN_PAISE = 500;
+const PAYMENT_AMOUNT_MAX_PAISE = 500000;
+const DEVICE_COOKIE = 'passport_device';
+const DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
+const SUPERVISOR_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const SUPERVISOR_WINDOW_MS = 15 * 60 * 1000;
+const SUPERVISOR_MAX_ATTEMPTS = 5;
+const SUPERVISOR_LOCKOUT_MS = 15 * 60 * 1000;
+const supervisorSessions = new Map();
+const supervisorAttempts = new Map();
+const supervisorCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [deviceId, session] of supervisorSessions) {
+    if (session.expiresAt <= now) supervisorSessions.delete(deviceId);
+  }
+  for (const [key, entry] of supervisorAttempts) {
+    if (entry.windowStarted + SUPERVISOR_WINDOW_MS <= now && entry.lockedUntil <= now) supervisorAttempts.delete(key);
+  }
+}, 10 * 60 * 1000);
+supervisorCleanupTimer.unref();
 const ADMIN_PATH_SECRET = String(process.env.ADMIN_PATH_SECRET || '')
   .trim()
   .replace(/^\/+|\/+$/g, '');
@@ -46,6 +74,92 @@ const ALLOWED_ORIGINS = (
 
 const app = express();
 console.log('[SERVER] Developer: Aman Singh');
+
+function parseCookies(header) {
+  const cookies = {};
+  for (const part of String(header || '').split(';')) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    const key = part.slice(0, index).trim();
+    try { cookies[key] = decodeURIComponent(part.slice(index + 1).trim()); } catch { /* ignore */ }
+  }
+  return cookies;
+}
+
+function cookieFlags() {
+  const secure = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+  const sameSite = secure ? 'None' : 'Lax';
+  return `Path=/; Max-Age=${DEVICE_TTL_SECONDS}; HttpOnly; SameSite=${sameSite}${secure ? '; Secure' : ''}`;
+}
+
+function getDeviceId(req, res) {
+  const existing = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
+  if (existing && /^[A-Za-z0-9_-]{32,128}$/.test(existing)) return existing;
+  const deviceId = crypto.randomBytes(32).toString('base64url');
+  res.append('Set-Cookie', `${DEVICE_COOKIE}=${encodeURIComponent(deviceId)}; ${cookieFlags()}`);
+  return deviceId;
+}
+
+function identity(req, res) {
+  const deviceId = getDeviceId(req, res);
+  const session = supervisorSessions.get(deviceId);
+  const supervisorActive = Boolean(session && session.expiresAt > Date.now());
+  if (session && !supervisorActive) supervisorSessions.delete(deviceId);
+  return { deviceId, supervisorActive };
+}
+
+function verifySupervisorCode(code) {
+  try {
+    const parts = SUPERVISOR_CODE_HASH.split('$');
+    if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+    const N = Number(parts[1]);
+    const r = Number(parts[2]);
+    const p = Number(parts[3]);
+    if (!Number.isInteger(N) || N < 16384 || N > 1048576 || (N & (N - 1)) !== 0
+      || !Number.isInteger(r) || r < 1 || r > 32 || !Number.isInteger(p) || p < 1 || p > 8) return false;
+    const salt = Buffer.from(parts[4], 'base64');
+    const expected = Buffer.from(parts[5], 'base64');
+    if (salt.length < 16 || expected.length < 32 || expected.length > 128) return false;
+    const actual = crypto.scryptSync(String(code || ''), salt, expected.length, {
+      N, r, p, maxmem: Math.max(32 * 1024 * 1024, 128 * N * r + 1024),
+    });
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+function supervisorAttemptKey(req, deviceId) {
+  return `${req.ip || 'unknown'}:${deviceId}`;
+}
+
+function supervisorLocked(key) {
+  const entry = supervisorAttempts.get(key);
+  if (!entry) return false;
+  if (entry.lockedUntil > Date.now()) return true;
+  if (entry.windowStarted + SUPERVISOR_WINDOW_MS <= Date.now()) supervisorAttempts.delete(key);
+  return false;
+}
+
+function recordSupervisorFailure(key) {
+  const now = Date.now();
+  const entry = supervisorAttempts.get(key);
+  if (!entry || entry.windowStarted + SUPERVISOR_WINDOW_MS <= now) {
+    supervisorAttempts.set(key, { count: 1, windowStarted: now, lockedUntil: 0 });
+    return;
+  }
+  entry.count += 1;
+  if (entry.count >= SUPERVISOR_MAX_ATTEMPTS) entry.lockedUntil = now + SUPERVISOR_LOCKOUT_MS;
+}
+
+function accountResponse(deviceId, supervisorActive) {
+  return {
+    ...walletSummary(deviceId),
+    supervisorActive,
+    supervisorConfigured: Boolean(SUPERVISOR_CODE_HASH),
+    razorpayConfigured: Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET),
+  };
+}
 
 // -------------------------------
 // REQUEST LOGGING
@@ -104,8 +218,138 @@ app.use(
     origin: ALLOWED_ORIGINS.includes('*')
       ? true
       : ALLOWED_ORIGINS,
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'X-Requested-With'],
   })
 );
+
+// Razorpay signs the exact raw request body. Keep this route before any JSON parser.
+app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '100kb' }), (req, res) => {
+  if (!RAZORPAY_WEBHOOK_SECRET) return res.status(503).json({ error: 'Payment webhooks are not configured' });
+  const supplied = req.get('X-Razorpay-Signature') || '';
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+  const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET).update(rawBody).digest('hex');
+  const suppliedBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    return res.status(400).json({ error: 'Invalid webhook signature' });
+  }
+  try {
+    const payload = JSON.parse(rawBody.toString('utf8'));
+    const event = payload.event;
+    if (event === 'payment.captured' || event === 'order.paid') {
+      const payment = payload.payload?.payment?.entity || {};
+      const order = payload.payload?.order?.entity || {};
+      const orderId = payment.order_id || order.id;
+      if (orderId) {
+        creditPayment({
+          deviceId: null,
+          orderId,
+          paymentId: payment.id || null,
+          amountPaise: Number(payment.amount || order.amount || 0),
+          status: 'captured',
+        });
+      }
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[PAYMENTS] Webhook processing failed:', error.message);
+    return res.status(400).json({ error: 'Invalid webhook payload' });
+  }
+});
+
+app.get('/api/account', (req, res) => {
+  const { deviceId, supervisorActive } = identity(req, res);
+  res.set('Cache-Control', 'no-store');
+  res.json(accountResponse(deviceId, supervisorActive));
+});
+
+app.post('/api/supervisor/activate', express.json({ limit: '4kb' }), (req, res) => {
+  const { deviceId } = identity(req, res);
+  const key = supervisorAttemptKey(req, deviceId);
+  if (supervisorLocked(key)) return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
+  const code = typeof req.body?.code === 'string' ? req.body.code : '';
+  if (!SUPERVISOR_CODE_HASH || !verifySupervisorCode(code)) {
+    recordSupervisorFailure(key);
+    return res.status(401).json({ error: 'Invalid supervisor code' });
+  }
+  supervisorAttempts.delete(key);
+  supervisorSessions.set(deviceId, { activatedAt: Date.now(), expiresAt: Date.now() + SUPERVISOR_SESSION_TTL_MS });
+  res.json({ ok: true, message: 'Supervisor mode activated', ...accountResponse(deviceId, true) });
+});
+
+app.post('/api/payments/order', express.json({ limit: '10kb' }), async (req, res) => {
+  const { deviceId } = identity(req, res);
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return res.status(503).json({ error: 'Payments are not configured', code: 'PAYMENTS_NOT_CONFIGURED' });
+  }
+  const amountPaise = Number(req.body?.amountPaise);
+  if (!Number.isInteger(amountPaise) || amountPaise < PAYMENT_AMOUNT_MIN_PAISE || amountPaise > PAYMENT_AMOUNT_MAX_PAISE) {
+    return res.status(400).json({ error: `Recharge amount must be between ₹${PAYMENT_AMOUNT_MIN_PAISE / 100} and ₹${PAYMENT_AMOUNT_MAX_PAISE / 100}.` });
+  }
+  try {
+    const receipt = `wallet_${crypto.randomBytes(10).toString('hex')}`;
+    const auth = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString('base64');
+    const response = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: amountPaise, currency: 'INR', receipt, notes: { product: 'passport-photo-wallet' } }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.id) {
+      console.error('[PAYMENTS] Razorpay order failed:', response.status, payload);
+      return res.status(502).json({ error: 'Could not create a payment order. Try again later.' });
+    }
+    createPayment(deviceId, payload.id, amountPaise);
+    res.json({ orderId: payload.id, amountPaise, currency: 'INR', keyId: RAZORPAY_KEY_ID });
+  } catch (error) {
+    console.error('[PAYMENTS] Order creation failed:', error.message);
+    res.status(502).json({ error: 'Payment service is unavailable. Try again later.' });
+  }
+});
+
+app.post('/api/payments/verify', express.json({ limit: '10kb' }), (req, res) => {
+  const { deviceId, supervisorActive } = identity(req, res);
+  const orderId = typeof req.body?.razorpay_order_id === 'string' ? req.body.razorpay_order_id : '';
+  const paymentId = typeof req.body?.razorpay_payment_id === 'string' ? req.body.razorpay_payment_id : '';
+  const signature = typeof req.body?.razorpay_signature === 'string' ? req.body.razorpay_signature : '';
+  if (!orderId || !paymentId || !signature || !RAZORPAY_KEY_SECRET) {
+    return res.status(400).json({ error: 'Incomplete payment verification details' });
+  }
+  const expected = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest('hex');
+  const suppliedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+    return res.status(400).json({ error: 'Payment signature verification failed' });
+  }
+  try {
+    const payment = creditPayment({ deviceId, orderId, paymentId, amountPaise: 0, signature });
+    if (!payment || payment.device_id !== deviceId) return res.status(404).json({ error: 'Payment order not found' });
+    res.json({ ok: true, ...accountResponse(deviceId, supervisorActive) });
+  } catch (error) {
+    console.error('[PAYMENTS] Verification failed:', error.message);
+    res.status(400).json({ error: 'Payment could not be applied' });
+  }
+});
+
+app.post('/api/usage/authorize', express.json({ limit: '10kb' }), (req, res) => {
+  const { deviceId, supervisorActive } = identity(req, res);
+  const operation = req.body?.operation;
+  const idempotencyKey = typeof req.body?.idempotencyKey === 'string'
+    ? req.body.idempotencyKey.slice(0, 128)
+    : '';
+  if (operation !== 'word_download' || !/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey)) {
+    return res.status(400).json({ error: 'A valid operation and idempotency key are required' });
+  }
+  const result = reserveUsage(deviceId, operation, idempotencyKey, supervisorActive);
+  if (!result.allowed) {
+    const status = result.code === 'INSUFFICIENT_BALANCE' ? 402 : 400;
+    return res.status(status).json({ error: result.code === 'INSUFFICIENT_BALANCE' ? 'Insufficient wallet balance. Please recharge to continue.' : 'Usage could not be authorized', code: result.code, account: accountResponse(deviceId, supervisorActive) });
+  }
+  completeUsage(result.usageId);
+  res.json({ ok: true, chargedPaise: result.chargedPaise, freeUse: result.freeUse, account: accountResponse(deviceId, supervisorActive) });
+});
 
 // -------------------------------
 // FILE UPLOAD
@@ -310,6 +554,7 @@ app.post(
     }
 
    const uploadId = crypto.randomUUID();
+   const { deviceId, supervisorActive } = identity(req, res);
    const originalFileName = `${uploadId}-original${path.extname(req.file.originalname).toLowerCase() || '.bin'}`;
    const originalPath = path.join(uploadsDir, originalFileName);
    fs.writeFileSync(originalPath, req.file.buffer);
@@ -330,6 +575,8 @@ app.post(
      createdAt: new Date().toISOString(),
    });
 
+   let usageId = null;
+   let apiReserved = false;
    try {
      if (!REMOVE_BG_API_KEY || REMOVE_BG_API_KEY === 'your_remove_bg_api_key_here') {
        failUpload(uploadId, 'remove.bg is not configured');
@@ -338,14 +585,30 @@ app.post(
        });
      }
 
-     const usage = reserveApiRequest(REMOVE_BG_MONTHLY_LIMIT);
-     if (!usage.allowed) {
-       failUpload(uploadId, 'remove.bg monthly limit reached');
-       return res.status(429).json({
-         error: 'Monthly remove.bg API limit reached',
-         usage: { used: usage.used, limit: usage.limit, remaining: usage.remaining },
+     if (!supervisorActive) {
+       const usage = reserveApiRequest(REMOVE_BG_MONTHLY_LIMIT);
+       if (!usage.allowed) {
+         failUpload(uploadId, 'remove.bg monthly limit reached');
+         return res.status(429).json({
+           error: 'Monthly remove.bg API limit reached',
+           code: 'REMOVE_BG_LIMIT',
+           usage: { used: usage.used, limit: usage.limit, remaining: usage.remaining },
+         });
+       }
+       apiReserved = true;
+     }
+
+     const authorization = reserveUsage(deviceId, 'remove_bg', crypto.randomUUID(), supervisorActive);
+     if (!authorization.allowed) {
+       if (apiReserved) releaseApiRequest();
+       failUpload(uploadId, 'wallet balance is insufficient');
+       return res.status(402).json({
+         error: 'Insufficient wallet balance. Please recharge to continue.',
+         code: 'INSUFFICIENT_BALANCE',
+         account: accountResponse(deviceId, supervisorActive),
        });
      }
+     usageId = authorization.usageId;
 
      console.log(
        `[REMOVE-BG] Upload: ` +
@@ -388,6 +651,8 @@ app.post(
      if (!removeBgResponse.ok) {
        const responseText = await removeBgResponse.text();
        console.error('[REMOVE-BG] remove.bg request failed:', removeBgResponse.status, responseText);
+       if (usageId) voidUsage(usageId);
+       if (apiReserved) releaseApiRequest();
        failUpload(uploadId, `remove.bg request failed with status ${removeBgResponse.status}`);
        return res.status(removeBgResponse.status).json({
          error: 'remove.bg background removal failed',
@@ -396,19 +661,29 @@ app.post(
      }
 
      const processedImage = Buffer.from(await removeBgResponse.arrayBuffer());
+     if (processedImage.length === 0) throw new Error('remove.bg returned an empty image');
      const processedFileName = `${uploadId}-processed.png`;
      fs.writeFileSync(path.join(uploadsDir, processedFileName), processedImage);
      completeUpload(uploadId, processedFileName, processedImage.length);
+     if (usageId) completeUsage(usageId);
+     if (apiReserved) completeApiRequest();
 
      console.log(
        `[REMOVE-BG] Success | ${processedImage.length} bytes`
      );
      logEvent(`Background removal succeeded (${processedImage.length} bytes)`, { path: '/api/remove-bg' });
 
+     res.set('X-Usage-Charged-Paise', String(authorization?.chargedPaise || 0));
      res.type('png').send(processedImage);
    } catch (err) {
      console.error('[REMOVE-BG] FAILED:', err);
      logEvent(`Background removal failed: ${err.message}`, { path: '/api/remove-bg', status: 500 });
+     if (usageId) {
+       try { voidUsage(usageId); } catch (rollbackError) { console.error('[REMOVE-BG] Wallet rollback failed:', rollbackError.message); }
+     }
+     if (apiReserved) {
+       try { releaseApiRequest(); } catch (rollbackError) { console.error('[REMOVE-BG] API quota rollback failed:', rollbackError.message); }
+     }
      failUpload(uploadId, err.message || 'Background removal failed');
 
      if (err && err.cause && err.cause.code === 'ENOTFOUND') {

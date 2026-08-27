@@ -95,6 +95,38 @@ frontend में कभी न रखें.
 
 ## 5. Frontend ko backend se connect karo
 
+## 6. Wallet, Razorpay and Supervisor Mode
+
+Every browser receives an opaque, HttpOnly device cookie. The server stores five
+free uses and the wallet balance in SQLite; client-side counters are never trusted.
+After the free uses, each successful background removal or Word download costs
+₹5. Razorpay is optional: leave its variables blank to keep the free-only
+experience (the UI explains that payments are unavailable).
+
+Set these server-only variables for payments:
+
+```text
+RAZORPAY_KEY_ID=your_public_key_id
+RAZORPAY_KEY_SECRET=your_secret_key
+RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
+```
+
+Configure the Razorpay webhook URL as `/api/payments/webhook` and enable the
+captured/paid events. Orders are created and signatures are verified only by
+this backend. Set `COOKIE_SECURE=true` (and use HTTPS) when the frontend and
+backend are on different sites.
+
+Supervisor Mode is intended only for the father/developer and bypasses wallet
+charges and app quotas for the current device session. Generate a scrypt hash
+without putting the code in source control:
+
+```bash
+node admin/generate-supervisor-hash.js "your-long-private-code"
+```
+
+Copy the output to `SUPERVISOR_CODE_HASH`. Failed attempts are rate limited and
+temporarily locked. Never expose the code or hash to the frontend.
+
 ## Project samajhne aur debug karne ke guides
 
 - [Architecture guide](./docs/ARCHITECTURE.md): request flow, file
@@ -115,7 +147,7 @@ Ismein apne backend ka URL daal do:
 - Local testing ke liye: `'http://localhost:8787'`
 - Production ke liye: jahan deploy karoge wahan ka URL (deployment section dekho)
 
-## 6. Free deployment (production ke liye)
+## 7. Free deployment (production ke liye)
 
 Ye backend kisi bhi free Node hosting par chal jaayega. Sabse aasaan:
 
@@ -131,6 +163,5 @@ Railway.app aur Fly.io bhi isi tarah free tier par kaam karte hain.
 ## Notes
 
 - remove.bg API usage account ke credits/rate limits par depend karti hai.
-- Ye backend sirf background-removal ke liye hai. Payment (Razorpay)
-  integration alag se baad mein add karenge — usmein order-create aur
-  signature-verify wale endpoints isi backend mein add ho jaayenge.
+- Razorpay is optional; configure its three server-only variables and webhook
+  before enabling paid recharges.

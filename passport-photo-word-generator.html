@@ -92,6 +92,15 @@
   .bg-custom input[type=color]{width:32px;height:26px;padding:0;border:1px solid var(--line);border-radius:5px;background:none;cursor:pointer;}
   .bg-note{font-size:11.5px;color:var(--muted);margin:8px 0 0;padding-left:26px;line-height:1.5;}
   .bg-warning{font-size:12.5px;color:var(--danger,#c1503a);margin-top:10px;line-height:1.5;}
+  .account-card{margin:14px 0 22px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:10px;}
+  .account-line{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px;}
+  .account-line strong{font-family:'Space Grotesk',sans-serif;color:var(--accent);}
+  .account-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+  .account-actions button,.supervisor-form button{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 10px;cursor:pointer;font:12px 'IBM Plex Mono',monospace;}
+  .account-actions button:hover,.supervisor-form button:hover{border-color:var(--accent);color:var(--accent);}
+  .supervisor-form{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
+  .supervisor-form input{flex:1;min-width:180px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;color:var(--ink);font:13px 'IBM Plex Mono',monospace;}
+  .account-message{color:var(--muted);font-size:12px;margin:10px 0 0;line-height:1.4;}
   .ai-option{display:flex;align-items:flex-start;gap:10px;margin:14px 0;padding:13px 14px;background:rgba(79,140,130,.12);border:1px solid rgba(79,140,130,.45);border-radius:9px;cursor:pointer;}
   .ai-option input{accent-color:var(--accent-2);width:16px;height:16px;margin-top:2px;}
   .ai-option strong{display:block;font-size:13px;color:var(--ink);}
@@ -149,6 +158,19 @@
     <p class="lead">The photo is auto-cropped and auto-enhanced first. Open advanced edit after processing if you want manual studio-style adjustments.</p>
     <div class="fixed-size">📐 Photo size: <span id="sizeSummary">35 × 45 mm</span></div>
     <div id="apiUsage" class="fixed-size">Background removal usage: loading…</div>
+    <div class="account-card">
+      <div class="account-line"><strong id="accountBalance">Free uses and wallet: loading…</strong><span id="supervisorStatus"></span></div>
+      <div class="account-actions" id="rechargeActions">
+        <button type="button" data-recharge="5000">Recharge ₹50</button>
+        <button type="button" data-recharge="10000">Recharge ₹100</button>
+        <button type="button" data-recharge="20000">Recharge ₹200</button>
+      </div>
+      <form class="supervisor-form" id="supervisorForm">
+        <input id="supervisorCode" type="password" autocomplete="off" placeholder="Father-only supervisor code" aria-label="Supervisor code">
+        <button type="submit">Activate supervisor mode</button>
+      </form>
+      <p id="accountMessage" class="account-message">Five free uses are included. Each additional successful operation costs ₹5.</p>
+    </div>
     <div class="trust-row">
       <div class="trust-card"><strong>Studio finish</strong><span>Auto light, color and sharpness correction.</span></div>
       <div class="trust-card"><strong>Browser editing</strong><span>Manual adjustments run locally after processing.</span></div>
@@ -309,8 +331,121 @@
   const AI_ENHANCE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/ai-enhance`;
   const STATUS_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/status`;
   const USAGE_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/usage`;
+  const ACCOUNT_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/account`;
+  const SUPERVISOR_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/supervisor/activate`;
+  const PAYMENT_ORDER_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payments/order`;
+  const PAYMENT_VERIFY_ENDPOINT = `${BACKEND_URL.replace(/\/$/, '')}/api/payments/verify`;
   let toastTimer = null;
   console.log('[Passport Photo] Background API configured:', REMOVE_BG_ENDPOINT);
+
+  async function refreshAccount(){
+    try{
+      const response = await fetch(ACCOUNT_ENDPOINT, { cache: 'no-store', credentials: 'include' });
+      if(!response.ok) throw new Error(`account request failed: ${response.status}`);
+      const account = await response.json();
+      el('accountBalance').textContent = `Free uses: ${account.freeUsesRemaining} · Wallet: ₹${Number(account.balanceRupees).toFixed(2)}`;
+      el('supervisorStatus').textContent = account.supervisorActive ? 'Supervisor mode activated' : '';
+      el('supervisorStatus').style.color = account.supervisorActive ? 'var(--accent-2)' : '';
+      document.querySelectorAll('[data-recharge]').forEach(button=>{
+        button.disabled = !account.razorpayConfigured || account.supervisorActive;
+        button.title = account.razorpayConfigured ? '' : 'Payments are not configured';
+      });
+      const supervisorButton = el('supervisorForm').querySelector('button');
+      supervisorButton.disabled = !account.supervisorConfigured || account.supervisorActive;
+      el('supervisorCode').disabled = !account.supervisorConfigured || account.supervisorActive;
+      if(!account.supervisorConfigured) el('supervisorForm').title = 'Supervisor mode is not configured';
+      if(!account.razorpayConfigured) el('accountMessage').textContent = 'Payments are not configured on this server. Five free uses still work.';
+      return account;
+    }catch(error){
+      el('accountBalance').textContent = 'Free uses and wallet are currently unavailable';
+      console.warn('[Passport Photo] Account check unavailable:', error);
+      return null;
+    }
+  }
+  refreshAccount();
+  setInterval(refreshAccount, 15000);
+
+  let razorpayLoader = null;
+  function loadRazorpay(){
+    if(window.Razorpay) return Promise.resolve();
+    if(razorpayLoader) return razorpayLoader;
+    razorpayLoader = new Promise((resolve, reject)=>{
+      const script = document.createElement('script');
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.onload = resolve;
+      script.onerror = ()=>reject(new Error('Razorpay checkout could not be loaded'));
+      document.head.appendChild(script);
+    });
+    return razorpayLoader;
+  }
+  async function startRecharge(amountPaise){
+    const message = el('accountMessage');
+    message.textContent = 'Creating secure payment order…';
+    try{
+      const response = await fetch(PAYMENT_ORDER_ENDPOINT, {
+        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ amountPaise })
+      });
+      const order = await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(order.error || 'Could not create payment order');
+      await loadRazorpay();
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        amount: order.amountPaise,
+        currency: order.currency,
+        name: 'Passport Photo Studio',
+        description: 'Wallet recharge',
+        order_id: order.orderId,
+        handler: async payment=>{
+          try{
+            const verify = await fetch(PAYMENT_VERIFY_ENDPOINT, {
+              method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify(payment)
+            });
+            const result = await verify.json().catch(()=>({}));
+            if(!verify.ok) throw new Error(result.error || 'Payment verification failed');
+            message.textContent = 'Payment successful. Wallet balance updated.';
+            await refreshAccount();
+          }catch(error){
+            message.textContent = error.message;
+          }
+        },
+        modal:{ ondismiss:()=>{ message.textContent = 'Payment cancelled.'; } }
+      });
+      checkout.on('payment.failed', ()=>{ message.textContent = 'Payment failed. No wallet balance was added.'; });
+      checkout.open();
+    }catch(error){
+      message.textContent = error.message;
+    }
+  }
+  document.querySelectorAll('[data-recharge]').forEach(button=>{
+    button.addEventListener('click', ()=>startRecharge(Number(button.dataset.recharge)));
+  });
+  el('supervisorForm').addEventListener('submit', async event=>{
+    event.preventDefault();
+    const code = el('supervisorCode').value;
+    if(!code) return;
+    const button = event.currentTarget.querySelector('button');
+    let activated = false;
+    button.disabled = true;
+    try{
+      const response = await fetch(SUPERVISOR_ENDPOINT, {
+        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ code })
+      });
+      const result = await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(result.error || 'Supervisor activation failed');
+      el('supervisorCode').value = '';
+      el('accountMessage').textContent = 'Supervisor mode activated. Charges and usage quota are bypassed for this session.';
+      activated = true;
+      await refreshAccount();
+    }catch(error){
+      el('accountMessage').textContent = error.message;
+    }finally{
+      button.disabled = activated;
+      el('supervisorCode').disabled = activated;
+    }
+  });
 
   async function checkWebsiteStatus(){
     try{
@@ -410,7 +545,7 @@
       formData.append('image', file);
       formData.append('widthMm', state.photoWidthMm);
       formData.append('heightMm', state.photoHeightMm);
-      const response = await fetch(AI_ENHANCE_ENDPOINT, { method: 'POST', body: formData });
+      const response = await fetch(AI_ENHANCE_ENDPOINT, { method: 'POST', body: formData, credentials: 'include' });
       if(!response.ok){
         const error = await response.json().catch(()=>({}));
         throw new Error(error.error || `AI enhancement failed: ${response.status}`);
@@ -478,7 +613,7 @@
         workingFile = await tryBackgroundCleanup(file, state.bgColor);
       }catch(err){
         console.error('background cleanup failed entirely', err);
-        if(err.code === 'REMOVE_BG_LIMIT'){
+        if(err.code === 'REMOVE_BG_LIMIT' || err.code === 'PAYMENT_REQUIRED'){
           el('processingRow').classList.add('hidden');
           el('bgWarning').textContent = err.message;
           el('bgWarning').classList.remove('warn', 'hidden');
@@ -519,7 +654,7 @@
         return await compositeOnBackground(cutoutBlob, colorHex);
       }catch(err){
         console.error('[Passport Photo] Backend/remove.bg background removal failed:', err);
-        if(err.code === 'REMOVE_BG_LIMIT') throw err;
+        if(err.code === 'REMOVE_BG_LIMIT' || err.code === 'PAYMENT_REQUIRED') throw err;
       }
     }
 
@@ -563,7 +698,7 @@
     const timeout = setTimeout(()=>controller.abort(), 30000);
     let resp;
     try{
-      resp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData, signal: controller.signal });
+      resp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData, signal: controller.signal, credentials: 'include' });
       console.log('[Passport Photo] Backend response:', resp.status, resp.statusText);
     } finally {
       clearTimeout(timeout);
@@ -572,6 +707,14 @@
     if(!resp.ok){
       const errorText = await resp.text();
       console.error('[Passport Photo] Backend error response:', resp.status, errorText);
+      let errorPayload = {};
+      try { errorPayload = JSON.parse(errorText); } catch {}
+      if(resp.status === 402 || errorPayload.code === 'INSUFFICIENT_BALANCE'){
+        refreshAccount();
+        const paymentError = new Error(errorPayload.error || 'Please recharge your wallet to continue.');
+        paymentError.code = 'PAYMENT_REQUIRED';
+        throw paymentError;
+      }
       if(resp.status === 429){
         refreshApiUsage();
         const limitError = new Error('Monthly API limit reached. Contact Aman Singh at amansomvanshi36@gmail.com or 9871667497.');
@@ -586,18 +729,20 @@
         try { info = JSON.parse(errorText); } catch {}
         const waitMs = Math.min(20000, (info.estimated_time || 8) * 1000);
         await new Promise(r=>setTimeout(r, waitMs));
-        const retryResp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData });
+        const retryResp = await fetch(REMOVE_BG_ENDPOINT, { method: 'POST', body: formData, credentials: 'include' });
         if(!retryResp.ok){
           const retryText = await retryResp.text();
           console.error('[Passport Photo] Backend retry error:', retryResp.status, retryText);
           throw new Error(`backend remove-bg retry failed: ${retryResp.status}`);
         }
         refreshApiUsage();
+        refreshAccount();
         return await retryResp.blob();
       }
       throw new Error(`backend remove-bg failed: ${resp.status}: ${errorText}`);
     }
     refreshApiUsage();
+    refreshAccount();
     return await resp.blob();
   }
 
@@ -922,23 +1067,36 @@ ${drawingsXml}
     const quantity = Math.max(1, parseInt(el('quantity').value)||1);
     el('generateBtn').disabled = true;
     el('generateBtn').textContent = 'Building document…';
+    try{
+      const idempotencyKey = `${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`.replace(/[^A-Za-z0-9_-]/g, '');
+      const authorization = await fetch(`${BACKEND_URL.replace(/\/$/, '')}/api/usage/authorize`, {
+        method:'POST', credentials:'include', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ operation:'word_download', idempotencyKey })
+      });
+      const authPayload = await authorization.json().catch(()=>({}));
+      if(!authorization.ok) throw new Error(authPayload.error || 'Word download is not authorized');
+      const arrayBuffer = await state.blob.arrayBuffer();
+      const { blob, cols, rows, perPage, totalPages } = await buildDocx(arrayBuffer, quantity, state.photoWidthMm, state.photoHeightMm);
 
-    const arrayBuffer = await state.blob.arrayBuffer();
-    const { blob, cols, rows, perPage, totalPages } = await buildDocx(arrayBuffer, quantity, state.photoWidthMm, state.photoHeightMm);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `passport-photos-${state.photoWidthMm}x${state.photoHeightMm}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `passport-photos-${state.photoWidthMm}x${state.photoHeightMm}.docx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    el('sheetSummary').innerHTML = `<b>${quantity}</b> photos at <b>${state.photoWidthMm}×${state.photoHeightMm}mm</b> → up to <b>${perPage}</b> per A4 page → <b>${totalPages}</b> page(s). File downloaded.`;
-    el('sheetSummary').classList.remove('hidden');
-    markDone(3);
-    el('generateBtn').disabled = false;
-    el('generateBtn').textContent = 'Generate & download Word file';
+      el('sheetSummary').innerHTML = `<b>${quantity}</b> photos at <b>${state.photoWidthMm}×${state.photoHeightMm}mm</b> → up to <b>${perPage}</b> per A4 page → <b>${totalPages}</b> page(s). File downloaded.`;
+      el('sheetSummary').classList.remove('hidden');
+      markDone(3);
+      el('accountMessage').textContent = authPayload.chargedPaise ? 'Word download charged ₹5.' : 'Word file downloaded using a free use.';
+      await refreshAccount();
+    }catch(error){
+      el('accountMessage').textContent = error.message;
+    }finally{
+      el('generateBtn').disabled = false;
+      el('generateBtn').textContent = 'Generate & download Word file';
+    }
   });
 
 })();
