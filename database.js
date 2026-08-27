@@ -29,13 +29,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_photo_uploads_created_at ON photo_uploads(created_at);
   CREATE INDEX IF NOT EXISTS idx_photo_uploads_firebase_uid ON photo_uploads(firebase_uid);
 `);
+const columns = db.prepare('PRAGMA table_info(photo_uploads)').all().map(column => column.name);
+if (!columns.includes('photo_width_mm')) db.exec('ALTER TABLE photo_uploads ADD COLUMN photo_width_mm REAL');
+if (!columns.includes('photo_height_mm')) db.exec('ALTER TABLE photo_uploads ADD COLUMN photo_height_mm REAL');
 
 function createUpload(record) {
   db.prepare(`
     INSERT INTO photo_uploads (
       id, firebase_uid, user_email, original_name, original_path,
-      mime_type, original_bytes, background_color, quantity, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      mime_type, original_bytes, background_color, quantity, photo_width_mm, photo_height_mm, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id,
     record.firebaseUid || null,
@@ -46,6 +49,8 @@ function createUpload(record) {
     record.originalBytes,
     record.backgroundColor || null,
     record.quantity || null,
+    record.photoWidthMm || null,
+    record.photoHeightMm || null,
     'processing',
     record.createdAt
   );
@@ -70,7 +75,7 @@ function failUpload(id, message) {
 function listUploads(limit = 100) {
   return db.prepare(`
     SELECT id, firebase_uid, user_email, original_name, mime_type,
-           original_bytes, processed_bytes, background_color, quantity,
+           original_bytes, processed_bytes, background_color, quantity, photo_width_mm, photo_height_mm,
            status, error_message, created_at, processed_at
     FROM photo_uploads
     ORDER BY created_at DESC

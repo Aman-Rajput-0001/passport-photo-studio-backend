@@ -62,6 +62,12 @@
   .field{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;width:140px;}
   .field label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;font-family:'IBM Plex Mono',monospace;}
   .field input{background:none;border:none;color:var(--ink);font-size:16px;width:100%;font-family:'IBM Plex Mono',monospace;outline:none;}
+  .size-options{margin:14px 0;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;}
+  .size-options>label,.custom-size label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);}
+  .size-options select,.custom-size input{background:var(--bg);border:1px solid var(--line);border-radius:5px;color:var(--ink);padding:7px;font:inherit;}
+  .size-options select{margin-left:8px;max-width:100%;}
+  .custom-size{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;}
+  .custom-size input{width:85px;}
 
   button.primary{background:var(--accent);color:var(--accent-ink);border:none;border-radius:7px;padding:13px 24px;
     font-size:14.5px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;}
@@ -140,7 +146,7 @@
     <p class="eyebrow">Passport Photo → Word File</p>
     <h1>Upload a photo, say how many you need — get a print-ready .docx.</h1>
     <p class="lead">The photo is auto-cropped and auto-enhanced first. Open advanced edit after processing if you want manual studio-style adjustments.</p>
-    <div class="fixed-size">📐 Fixed size: 35 × 45 mm — Indian passport / govt ID standard</div>
+    <div class="fixed-size">📐 Photo size: <span id="sizeSummary">35 × 45 mm</span></div>
     <div class="trust-row">
       <div class="trust-card"><strong>Studio finish</strong><span>Auto light, color and sharpness correction.</span></div>
       <div class="trust-card"><strong>Browser editing</strong><span>Manual adjustments run locally after processing.</span></div>
@@ -158,6 +164,21 @@
         <div class="toggle-row-bg">
           <input type="checkbox" id="bgRemoveToggle" checked>
           <label for="bgRemoveToggle">Studio background — auto-remove &amp; replace</label>
+        </div>
+        <div class="size-options">
+          <label for="sizePreset">Photo size</label>
+          <select id="sizePreset">
+            <option value="35x45">Passport — 35 × 45 mm</option>
+            <option value="25x35">Small ID — 25 × 35 mm</option>
+            <option value="30x40">Visa — 30 × 40 mm</option>
+            <option value="40x50">Large ID — 40 × 50 mm</option>
+            <option value="custom">Custom size</option>
+          </select>
+          <div id="customSizeFields" class="custom-size hidden">
+            <label>Width (mm) <input id="photoWidthMm" type="number" min="10" max="100" step="0.1" value="35"></label>
+            <label>Height (mm) <input id="photoHeightMm" type="number" min="10" max="140" step="0.1" value="45"></label>
+          </div>
+          <p class="bg-note">Choose a preset or enter your own width and height. The crop and Word output use this exact size.</p>
         </div>
         <div class="chip-row" id="bgColorChips">
           <div class="bgchip active" data-color="#ffffff">White (passport)</div>
@@ -189,7 +210,7 @@
       <div id="resultRow" class="result-row hidden">
         <img id="resultImg" alt="processed passport photo">
         <div class="result-meta">
-          <div><b>Ready</b> · 35×45mm · 300 DPI</div>
+          <div><b>Ready</b> · <span id="resultSize">35×45mm</span> · 300 DPI</div>
           <div>Automatic studio enhancement applied</div>
           <button class="link-btn" id="aiEnhance" style="margin-top:6px;">✨ Enhance with AI</button>
           <button class="link-btn" id="changePhoto" style="margin-top:6px;">Upload a different photo</button>
@@ -228,7 +249,7 @@
       <p class="step-sub">Generates a real .docx file — opens directly in Word.</p>
       <button class="primary" id="generateBtn" disabled>Generate &amp; download Word file</button>
       <div id="sheetSummary" class="sheet-summary hidden"></div>
-      <p class="tip">Print at 100% scale (no "fit to page") for exact 35×45mm size. Cut along each photo's edge.</p>
+      <p class="tip">Print at 100% scale (no "fit to page") for the selected exact size. Cut along each photo's edge.</p>
     </div>
   </div>
   <footer class="footer">
@@ -241,14 +262,42 @@
 (async function(){
   const MM_TO_EMU = 36000;
   const MM_TO_TWIP = 56.69291338582677;
-  const PHOTO_W_MM = 35, PHOTO_H_MM = 45;
+  const DEFAULT_SIZE = { width: 35, height: 45 };
   const DPI = 300;
-  const PX_W = Math.round(PHOTO_W_MM * DPI / 25.4);
-  const PX_H = Math.round(PHOTO_H_MM * DPI / 25.4);
 
   const el = id => document.getElementById(id);
-  const state = { img: null, originalFile: null, processedCanvas: null, blob: null, bgColor: '#ffffff' };
+  const state = { img: null, originalFile: null, processedCanvas: null, blob: null, bgColor: '#ffffff', photoWidthMm: DEFAULT_SIZE.width, photoHeightMm: DEFAULT_SIZE.height };
   const editControls = ['brightness', 'contrast', 'saturation', 'sharpness'];
+  function getPhotoSize(){
+    const width = Number(el('photoWidthMm').value);
+    const height = Number(el('photoHeightMm').value);
+    if(!Number.isFinite(width) || !Number.isFinite(height) || width < 10 || width > 100 || height < 10 || height > 140){
+      throw new Error('Photo size must be between 10–100 mm wide and 10–140 mm high.');
+    }
+    return { width, height };
+  }
+  function updatePhotoSize(reprocess = true){
+    const size = getPhotoSize();
+    state.photoWidthMm = size.width;
+    state.photoHeightMm = size.height;
+    const label = `${size.width} × ${size.height} mm`;
+    el('sizeSummary').textContent = label;
+    el('resultSize').textContent = `${size.width}×${size.height}mm`;
+    if(reprocess && state.img) processPhoto();
+  }
+  const sizePresets = { '35x45': DEFAULT_SIZE, '25x35': { width: 25, height: 35 }, '30x40': { width: 30, height: 40 }, '40x50': { width: 40, height: 50 } };
+  el('sizePreset').addEventListener('change', ()=>{
+    const preset = sizePresets[el('sizePreset').value];
+    const custom = el('sizePreset').value === 'custom';
+    el('customSizeFields').classList.toggle('hidden', !custom);
+    if(preset){ el('photoWidthMm').value = preset.width; el('photoHeightMm').value = preset.height; }
+    updatePhotoSize();
+  });
+  ['photoWidthMm', 'photoHeightMm'].forEach(id=>el(id).addEventListener('input', ()=>{
+    el('sizePreset').value = 'custom';
+    el('customSizeFields').classList.remove('hidden');
+    try { updatePhotoSize(); } catch (error) { el('bgWarning').textContent = error.message; el('bgWarning').classList.remove('hidden'); }
+  }));
 
   // ---------- Backend config ----------
   // Local development: your Node/Express backend runs on port 8787.
@@ -342,6 +391,8 @@
     try{
       const formData = new FormData();
       formData.append('image', file);
+      formData.append('widthMm', state.photoWidthMm);
+      formData.append('heightMm', state.photoHeightMm);
       const response = await fetch(AI_ENHANCE_ENDPOINT, { method: 'POST', body: formData });
       if(!response.ok){
         const error = await response.json().catch(()=>({}));
@@ -395,6 +446,7 @@
   }
 
   async function processUploadedFile(file){
+    try { updatePhotoSize(false); } catch (error) { el('bgWarning').textContent = error.message; el('bgWarning').classList.remove('hidden'); return; }
     el('resultRow').classList.add('hidden');
     el('bgWarning').classList.add('hidden');
     el('processingRow').classList.remove('hidden');
@@ -474,6 +526,8 @@
     formData.append('image', file);
     formData.append('backgroundColor', colorHex.replace('#', ''));
     formData.append('quantity', el('quantity').value);
+    formData.append('widthMm', state.photoWidthMm);
+    formData.append('heightMm', state.photoHeightMm);
 
     console.log('[Passport Photo] Sending image to backend:', REMOVE_BG_ENDPOINT, {
       name: file.name,
@@ -596,10 +650,12 @@
   function processPhoto(){
     const img = state.img;
     const canvas = document.createElement('canvas');
-    canvas.width = PX_W; canvas.height = PX_H;
+    const pxW = Math.round(state.photoWidthMm * DPI / 25.4);
+    const pxH = Math.round(state.photoHeightMm * DPI / 25.4);
+    canvas.width = pxW; canvas.height = pxH;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    const targetAspect = PX_W / PX_H;
+    const targetAspect = pxW / pxH;
     const srcAspect = img.width / img.height;
     let sx, sy, sw, sh;
     if(srcAspect > targetAspect){
@@ -616,9 +672,9 @@
       const excess = img.height - sh;
       sy = excess * 0.18;
     }
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, PX_W, PX_H);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, pxW, pxH);
 
-    autoEnhance(ctx, PX_W, PX_H);
+    autoEnhance(ctx, pxW, pxH);
 
     state.processedCanvas = canvas;
     canvas.toBlob(blob=>{
@@ -715,13 +771,13 @@
   function mmEmu(mm){ return Math.round(mm * MM_TO_EMU); }
   function mmTwip(mm){ return Math.round(mm * MM_TO_TWIP); }
 
-  async function buildDocx(imageArrayBuffer, quantity){
+  async function buildDocx(imageArrayBuffer, quantity, photoWidthMm, photoHeightMm){
     const pageWmm = 210, pageHmm = 297;
     const marginXmm = 10, marginYmm = 10, gapXmm = 3, gapYmm = 5;
     const availWmm = pageWmm - 2*marginXmm;
     const availHmm = pageHmm - 2*marginYmm;
-    const cols = Math.max(1, Math.floor((availWmm + gapXmm) / (PHOTO_W_MM + gapXmm)));
-    const rows = Math.max(1, Math.floor((availHmm + gapYmm) / (PHOTO_H_MM + gapYmm)));
+    const cols = Math.max(1, Math.floor((availWmm + gapXmm) / (photoWidthMm + gapXmm)));
+    const rows = Math.max(1, Math.floor((availHmm + gapYmm) / (photoHeightMm + gapYmm)));
     const perPage = cols * rows;
 
     let drawingsXml = '';
@@ -732,8 +788,8 @@
       const posOnPage = i % perPage;
       const col = posOnPage % cols;
       const row = Math.floor(posOnPage / cols);
-      const xMM = marginXmm + col * (PHOTO_W_MM + gapXmm);
-      const yMM = marginYmm + row * (PHOTO_H_MM + gapYmm);
+      const xMM = marginXmm + col * (photoWidthMm + gapXmm);
+      const yMM = marginYmm + row * (photoHeightMm + gapYmm);
       const isFirstOnPage = posOnPage === 0;
       const pageBreakXml = (isFirstOnPage && pageIndex > 0) ? '<w:p><w:r><w:br w:type="page"/></w:r></w:p>' : '';
       docPrId++;
@@ -743,7 +799,7 @@
         `<wp:simplePos x="0" y="0"/>` +
         `<wp:positionH relativeFrom="page"><wp:posOffset>${mmEmu(xMM)}</wp:posOffset></wp:positionH>` +
         `<wp:positionV relativeFrom="page"><wp:posOffset>${mmEmu(yMM)}</wp:posOffset></wp:positionV>` +
-        `<wp:extent cx="${mmEmu(PHOTO_W_MM)}" cy="${mmEmu(PHOTO_H_MM)}"/>` +
+        `<wp:extent cx="${mmEmu(photoWidthMm)}" cy="${mmEmu(photoHeightMm)}"/>` +
         `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
         `<wp:wrapNone/>` +
         `<wp:docPr id="${docPrId}" name="Photo ${docPrId}"/>` +
@@ -752,7 +808,7 @@
         `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
         `<pic:nvPicPr><pic:cNvPr id="0" name="Photo ${docPrId}"/><pic:cNvPicPr><a:picLocks noChangeAspect="1"/></pic:cNvPicPr></pic:nvPicPr>` +
         `<pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
-        `<pic:spPr bwMode="auto"><a:xfrm><a:off x="0" y="0"/><a:ext cx="${mmEmu(PHOTO_W_MM)}" cy="${mmEmu(PHOTO_H_MM)}"/></a:xfrm>` +
+        `<pic:spPr bwMode="auto"><a:xfrm><a:off x="0" y="0"/><a:ext cx="${mmEmu(photoWidthMm)}" cy="${mmEmu(photoHeightMm)}"/></a:xfrm>` +
         `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
         `<a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:srgbClr val="000000"/></a:solidFill><a:prstDash val="solid"/></a:ln></pic:spPr>` +
         `</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>`;
@@ -836,17 +892,17 @@ ${drawingsXml}
     el('generateBtn').textContent = 'Building document…';
 
     const arrayBuffer = await state.blob.arrayBuffer();
-    const { blob, cols, rows, perPage, totalPages } = await buildDocx(arrayBuffer, quantity);
+    const { blob, cols, rows, perPage, totalPages } = await buildDocx(arrayBuffer, quantity, state.photoWidthMm, state.photoHeightMm);
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'passport-photos-35x45.docx';
+    a.download = `passport-photos-${state.photoWidthMm}x${state.photoHeightMm}.docx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
 
-    el('sheetSummary').innerHTML = `<b>${quantity}</b> photos at <b>35×45mm</b> → up to <b>${perPage}</b> per A4 page → <b>${totalPages}</b> page(s). File downloaded.`;
+    el('sheetSummary').innerHTML = `<b>${quantity}</b> photos at <b>${state.photoWidthMm}×${state.photoHeightMm}mm</b> → up to <b>${perPage}</b> per A4 page → <b>${totalPages}</b> page(s). File downloaded.`;
     el('sheetSummary').classList.remove('hidden');
     markDone(3);
     el('generateBtn').disabled = false;

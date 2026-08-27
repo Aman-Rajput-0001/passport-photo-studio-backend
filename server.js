@@ -27,6 +27,13 @@ const HF_ENHANCE_MODEL = process.env.HF_ENHANCE_MODEL || 'caidas/swin2SR-classic
 const ADMIN_PATH_SECRET = String(process.env.ADMIN_PATH_SECRET || '')
   .trim()
   .replace(/^\/+|\/+$/g, '');
+function parsePhotoDimension(value, name, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) {
+    throw new Error(`${name} must be between ${min} and ${max} mm`);
+  }
+  return number;
+}
 
 // Comma-separated list of origins allowed to call this backend.
 // Use "*" while testing.
@@ -288,6 +295,15 @@ app.post(
       });
     }
 
+    let photoWidthMm;
+    let photoHeightMm;
+    try {
+      photoWidthMm = parsePhotoDimension(req.body.widthMm ?? 35, 'Photo width', 10, 100);
+      photoHeightMm = parsePhotoDimension(req.body.heightMm ?? 45, 'Photo height', 10, 140);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
    const uploadId = crypto.randomUUID();
    const originalFileName = `${uploadId}-original${path.extname(req.file.originalname).toLowerCase() || '.bin'}`;
    const originalPath = path.join(uploadsDir, originalFileName);
@@ -304,6 +320,8 @@ app.post(
      originalBytes: req.file.size,
      backgroundColor: req.body.backgroundColor,
      quantity: req.body.quantity,
+     photoWidthMm,
+     photoHeightMm,
      createdAt: new Date().toISOString(),
    });
 
