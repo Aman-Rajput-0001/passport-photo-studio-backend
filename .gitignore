@@ -1,0 +1,8 @@
+.env
+data/
+# Runtime database, session and broadcast state (never commit these).
+data/*.sqlite
+data/*.sqlite-*
+data/admin-sessions/
+data/site-state.json
+node_modules/
